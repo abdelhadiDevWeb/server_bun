@@ -3,7 +3,7 @@ import morgan from "morgan";
 // @ts-ignore - Express types issue with ESNext modules
 import express from "express";
 import rateLimit from "express-rate-limit";
-import { AppDataSource } from "./TypeORM/TypeORM";
+import { connectDatabase } from "./Database/Mongoose";
 import "dotenv/config";
 import { AppConfig, ValidatAppConfig } from "./config/app.config";
 import Allversion from "./Router/index";
@@ -12,15 +12,12 @@ import  {type Request , type Response , type NextFunction}  from 'express'
 import cookieParser from 'cookie-parser'
 import http from "http";
 import cors from 'cors'
-
-import "reflect-metadata";
  
 
 
 
 // import session from "express-session";
 // import { SessionEntity } from "./entity/Session";
-// import { TypeormStore } from "connect-typeorm";
 
 
 const app = express();
@@ -108,21 +105,20 @@ app.use(
 app.use('/api' , Allversion)
 
 
-ValidatAppConfig(() => {
- 
-  
-  AppDataSource.initialize()  
-  .then(()=>{
+ValidatAppConfig(async () => {
+  try {
+    // Connect to MongoDB
+    await connectDatabase();
 
-      console.log('MongoDB Database "labo" Is Connected');
-
-      // run Server
-     server.listen(AppConfig.PORT, () => {
-       console.log("server is runing on port ", AppConfig.PORT);
-     });
-
-  }).catch((err: Error) => {
-    console.log('Err' , err );
-    throw err;
-  })
+    // Run Server
+    server.listen(AppConfig.PORT, () => {
+      console.log("server is runing on port ", AppConfig.PORT);
+    });
+  } catch (err: unknown) {
+    console.log('Error:', err);
+    if (err instanceof Error) {
+      throw err;
+    }
+    throw new Error('Unknown error occurred');
+  }
 });
