@@ -84,16 +84,56 @@ router.get(
         .limit(5)
         .lean();
 
+      // Count sold cars
+      const soldCarsCount = await Car.countDocuments({ 
+        owner: userIdObjectId,
+        status: 'sold' 
+      });
+
+      // Get top cars (most active, ordered by creation date or status)
+      const topCars = await Car.find({ 
+        owner: userIdObjectId 
+      })
+        .select('brand model year status createdAt')
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .lean();
+
+      // Calculate average price of sold cars
+      const soldCars = await Car.find({ 
+        owner: userIdObjectId,
+        status: 'sold' 
+      })
+        .select('price')
+        .lean();
+
+      const averagePrice = soldCars.length > 0
+        ? soldCars.reduce((sum, car) => sum + (car.price || 0), 0) / soldCars.length
+        : 0;
+
+      // Calculate conversion rate (sold cars / total cars)
+      const conversionRate = totalCarsCount > 0
+        ? ((soldCarsCount / totalCarsCount) * 100).toFixed(1)
+        : 0;
+
       return res.status(200).json({
         ok: true,
         stats: {
           activeCars: activeCarsCount,
           totalCars: totalCarsCount,
+          soldCars: soldCarsCount,
           unreadNotifications: unreadNotificationsCount,
           totalNotifications: totalNotificationsCount,
           totalAppointments: totalAppointmentsCount,
           upcomingAppointments: upcomingAppointmentsCount,
+          averagePrice: Math.round(averagePrice),
+          conversionRate: parseFloat(conversionRate),
         },
+        topCars: topCars.map(car => ({
+          ...car,
+          id: car._id?.toString(),
+          name: `${car.brand} ${car.model} ${car.year}`,
+        })),
         recentAppointments: recentAppointments.map(apt => ({
           ...apt,
           id: apt._id?.toString(),

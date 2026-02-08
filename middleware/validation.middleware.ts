@@ -129,6 +129,13 @@ export const validationSchemas = {
         "string.pattern.base": "Format de téléphone invalide",
         "any.required": "Le téléphone est requis",
       }),
+    type: Joi.string()
+      .valid('car_cover', 'mechanic')
+      .required()
+      .messages({
+        "any.only": "Le type d'atelier doit être 'car_cover' ou 'mechanic'",
+        "any.required": "Le type d'atelier est requis",
+      }),
     password: Joi.string()
       .min(8)
       .max(128)

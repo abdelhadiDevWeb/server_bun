@@ -33,6 +33,13 @@ const RendezVousWorkshopSchema = new Schema(
       enum: ['en_attente', 'accepted', 'refused'],
       default: 'en_attente' 
     },
+    images: [{ 
+      type: String 
+    }], // Array of image paths
+    rapport_pdf: { 
+      type: String, 
+      default: null 
+    }, // PDF report file path
   },
   { timestamps: true }
 );

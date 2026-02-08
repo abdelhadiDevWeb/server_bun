@@ -7,6 +7,11 @@ const WorkshopSchema = new Schema(
     adr: { type: String, required: true, trim: true },
     phone: { type: String, required: true, trim: true, unique: true, index: true },
     password: { type: String, required: true },
+    type: {
+      type: String,
+      enum: ['car_cover', 'mechanic'],
+      required: true,
+    },
     status: { type: Boolean, default: false },
     verfie: { type: Boolean, default: false },
   },

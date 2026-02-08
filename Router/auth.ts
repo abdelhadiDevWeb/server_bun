@@ -129,7 +129,7 @@ router.post("/register/user", authRateLimiter, validate(validationSchemas.regist
 router.post("/register/workshop", authRateLimiter, validate(validationSchemas.registerWorkshop), async (req: Request, res: Response) => {
   try {
     // Body is already validated and sanitized by Joi middleware
-    const { name, email, adr, phone, password } = req.body;
+    const { name, email, adr, phone, type, password } = req.body;
 
     if (!name || !email || !adr || !phone || !password) {
       return res.status(400).json({
@@ -187,6 +187,7 @@ router.post("/register/workshop", authRateLimiter, validate(validationSchemas.re
       email: email.toLowerCase(),
       adr,
       phone,
+      type,
       password: hashed,
       // status/verfie default false
     });
@@ -535,7 +536,8 @@ router.get("/me", authenticateToken, async (req: Request, res: Response) => {
           adr: workshop.adr,
           phone: workshop.phone,
           status: workshop.status,
-          type: "workshop",
+          type: workshop.type || "workshop", // Include workshop type (mechanic or car_cover)
+          verfie: workshop.verfie,
         },
       });
     }

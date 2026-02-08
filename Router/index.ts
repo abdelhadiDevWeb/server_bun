@@ -8,6 +8,7 @@ import workshopRouter from "./workshop";
 import rdvWorkshopRouter from "./rdvWorkshop";
 import notificationRouter from "./notification";
 import sellerStatsRouter from "./sellerStats";
+import workshopStatsRouter from "./workshopStats";
 
 const router = Router();
 
@@ -24,6 +25,7 @@ router.use("/workshop", workshopRouter);
 router.use("/rdv-workshop", rdvWorkshopRouter);
 router.use("/notification", notificationRouter);
 router.use("/seller-stats", sellerStatsRouter);
+router.use("/workshop-stats", workshopStatsRouter);
 
 export default router;
 
