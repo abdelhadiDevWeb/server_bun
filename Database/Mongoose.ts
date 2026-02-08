@@ -2,14 +2,14 @@ import mongoose from "mongoose";
 import "dotenv/config";
 
 const MONGODB_URI = process.env.MONGODB_URI || 
-  `mongodb://${process.env.DB_HOST || "localhost"}:${process.env.DB_PORT || "27017"}/labo`;
+  `mongodb://${process.env.DB_HOST || "localhost"}:${process.env.DB_PORT || "27017"}/cars`;
 
 export const connectDatabase = async (): Promise<void> => {
   try {
     await mongoose.connect(MONGODB_URI, {
       // MongoDB connection options
     });
-    console.log('MongoDB Database "labo" Is Connected');
+    console.log('MongoDB Database Cars application Is Connected');
   } catch (error) {
     console.error('MongoDB connection error:', error);
     throw error;

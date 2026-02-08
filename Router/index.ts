@@ -1,5 +1,13 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
+import authRouter from "./auth";
+import carRouter from "./car";
+import userImageRouter from "./userImage";
+import statsRouter from "./stats";
+import workshopRouter from "./workshop";
+import rdvWorkshopRouter from "./rdvWorkshop";
+import notificationRouter from "./notification";
+import sellerStatsRouter from "./sellerStats";
 
 const router = Router();
 
@@ -8,8 +16,14 @@ router.get("/health", (req: Request, res: Response) => {
   res.status(200).json({ status: "ok", message: "Server is running" });
 });
 
-// Placeholder for future routes
-// Example: router.use("/users", userRoutes);
+router.use("/auth", authRouter);
+router.use("/car", carRouter);
+router.use("/user-image", userImageRouter);
+router.use("/stats", statsRouter);
+router.use("/workshop", workshopRouter);
+router.use("/rdv-workshop", rdvWorkshopRouter);
+router.use("/notification", notificationRouter);
+router.use("/seller-stats", sellerStatsRouter);
 
 export default router;
 
