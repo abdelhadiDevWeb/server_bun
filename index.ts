@@ -53,6 +53,18 @@ io.on('connection', (socket) => {
     console.log(`Socket ${socket.id} left workshop_${workshopId}`);
   });
 
+  // Join user room when authenticated
+  socket.on('join_user', (userId: string) => {
+    socket.join(`user_${userId}`);
+    console.log(`Socket ${socket.id} joined user_${userId}`);
+  });
+
+  // Leave user room
+  socket.on('leave_user', (userId: string) => {
+    socket.leave(`user_${userId}`);
+    console.log(`Socket ${socket.id} left user_${userId}`);
+  });
+
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
   });
@@ -74,6 +86,8 @@ app.use('/uploads/images', express.static(path.join(__dirname, 'uploads/images')
 app.use('/uploads/pdf', express.static(path.join(__dirname, 'uploads/pdf')));
 app.use('/uploads/video', express.static(path.join(__dirname, 'uploads/video')));
 app.use('/uploads/users_images', express.static(path.join(__dirname, 'uploads/users_images')));
+app.use('/uploads/rdv_images', express.static(path.join(__dirname, 'uploads/rdv_images')));
+app.use('/uploads/rdv_pdf', express.static(path.join(__dirname, 'uploads/rdv_pdf')));
 app.use(express.json({ limit: "100mb" }));
 app.use(express.urlencoded({extended:true , limit:'100mb'}))
 app.use(express.json());

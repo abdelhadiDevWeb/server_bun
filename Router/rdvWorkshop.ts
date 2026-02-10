@@ -6,6 +6,9 @@ import { authenticateToken } from "../middleware/auth.middleware";
 import { Car } from "../Models/Car";
 import Joi from "joi";
 import mongoose from "mongoose";
+import { uploadRdvImagesMultiple, uploadRdvPdfSingle } from "../middleware/upload.middleware";
+import fs from "fs";
+import path from "path";
 
 const router = Router();
 
@@ -273,6 +276,50 @@ router.get(
   }
 );
 
+// Get appointments for a specific car (public endpoint)
+router.get(
+  "/car/:carId",
+  async (req: Request, res: Response) => {
+    try {
+      const { carId } = req.params;
+
+      if (!carId) {
+        return res.status(400).json({
+          ok: false,
+          message: "ID de voiture requis",
+        });
+      }
+
+      const carIdObjectId = mongoose.Types.ObjectId.isValid(carId) 
+        ? new mongoose.Types.ObjectId(carId) 
+        : carId;
+
+      const appointments = await RendezVousWorkshop.find({ 
+        id_car: carIdObjectId,
+        status: 'finish' // Only return finished appointments
+      })
+        .populate('id_workshop', 'name email phone adr')
+        .populate('id_car', 'brand model year')
+        .sort({ date: -1, time: -1 })
+        .lean();
+
+      return res.status(200).json({
+        ok: true,
+        appointments: appointments.map(apt => ({
+          ...apt,
+          id: apt._id?.toString(),
+        })),
+      });
+    } catch (err: any) {
+      console.error("Get car appointments error:", err);
+      return res.status(500).json({
+        ok: false,
+        message: err?.message ?? "Erreur serveur",
+      });
+    }
+  }
+);
+
 // Get workshop's appointments
 router.get(
   "/workshop-appointments",
@@ -331,10 +378,10 @@ router.put(
       }
 
       // Validate status
-      if (!['en_attente', 'accepted', 'refused'].includes(status)) {
+      if (!['en_attente', 'accepted', 'refused', 'en_cours', 'finish'].includes(status)) {
         return res.status(400).json({
           ok: false,
-          message: "Le statut doit être 'en_attente', 'accepted' ou 'refused'",
+          message: "Le statut doit être 'en_attente', 'accepted', 'refused', 'en_cours' ou 'finish'",
         });
       }
 
@@ -355,8 +402,19 @@ router.put(
         });
       }
 
+      const oldStatus = appointment.status;
       appointment.status = status;
       await appointment.save();
+
+      // If status changed to 'finish', update car status to 'actif'
+      if (status === 'finish' && oldStatus !== 'finish') {
+        const { Car } = await import("../Models/Car");
+        const car = await Car.findById(appointment.id_car);
+        if (car) {
+          car.status = 'actif';
+          await car.save();
+        }
+      }
 
       // Create notification for user based on status
       const { Notification } = await import("../Models/Notification");
@@ -369,6 +427,12 @@ router.put(
       } else if (status === 'refused') {
         notificationMessage = `Votre rendez-vous du ${new Date(appointment.date).toLocaleDateString('fr-FR')} à ${appointment.time} a été refusé`;
         notificationType = 'cancel_rdv_workshop';
+      } else if (status === 'en_cours') {
+        notificationMessage = `La vérification de votre véhicule pour le rendez-vous du ${new Date(appointment.date).toLocaleDateString('fr-FR')} à ${appointment.time} a commencé`;
+        notificationType = 'rdv_workshop';
+      } else if (status === 'finish') {
+        notificationMessage = `La vérification de votre véhicule pour le rendez-vous du ${new Date(appointment.date).toLocaleDateString('fr-FR')} à ${appointment.time} est terminée. Votre véhicule est maintenant actif.`;
+        notificationType = 'done_rdv_workshop';
       }
 
       if (notificationMessage) {
@@ -380,12 +444,25 @@ router.put(
           is_read: false,
         });
         await notification.save();
+
+        // Emit socket event to user
+        const io = (global as any).io;
+        if (io) {
+          const notificationData = {
+            notification: notification.toJSON(),
+            appointment: appointment.toJSON(),
+          };
+          io.to(`user_${appointment.id_owner_car.toString()}`).emit('new_notification', notificationData);
+          console.log(`📢 Socket notification sent to user_${appointment.id_owner_car.toString()}`);
+        }
       }
 
       const statusMessages: Record<string, string> = {
         'en_attente': "Rendez-vous remis en attente",
         'accepted': "Rendez-vous accepté",
         'refused': "Rendez-vous refusé",
+        'en_cours': "Vérification en cours",
+        'finish': "Vérification terminée",
       };
 
       return res.status(200).json({
@@ -395,6 +472,316 @@ router.put(
       });
     } catch (err: any) {
       console.error("Update appointment status error:", err);
+      return res.status(500).json({
+        ok: false,
+        message: err?.message ?? "Erreur serveur",
+      });
+    }
+  }
+);
+
+// Upload images for appointment
+router.post(
+  "/:id/images",
+  authenticateToken,
+  uploadRdvImagesMultiple,
+  async (req: Request, res: Response) => {
+    try {
+      const userId = req.user?.id;
+      const userType = req.user?.type;
+      const appointmentId = req.params.id;
+
+      if (!userId || userType !== 'workshop') {
+        // Clean up uploaded files if unauthorized
+        if (req.files && Array.isArray(req.files)) {
+          req.files.forEach((file: Express.Multer.File) => {
+            if (fs.existsSync(file.path)) {
+              try {
+                fs.unlinkSync(file.path);
+              } catch (err) {
+                console.error("Error deleting file:", err);
+              }
+            }
+          });
+        }
+        return res.status(401).json({
+          ok: false,
+          message: "Atelier non authentifié",
+        });
+      }
+
+      const appointment = await RendezVousWorkshop.findById(appointmentId);
+
+      if (!appointment) {
+        // Clean up uploaded files
+        if (req.files && Array.isArray(req.files)) {
+          req.files.forEach((file: Express.Multer.File) => {
+            if (fs.existsSync(file.path)) {
+              try {
+                fs.unlinkSync(file.path);
+              } catch (err) {
+                console.error("Error deleting file:", err);
+              }
+            }
+          });
+        }
+        return res.status(404).json({
+          ok: false,
+          message: "Rendez-vous non trouvé",
+        });
+      }
+
+      // Verify appointment belongs to workshop
+      if (appointment.id_workshop.toString() !== userId) {
+        // Clean up uploaded files
+        if (req.files && Array.isArray(req.files)) {
+          req.files.forEach((file: Express.Multer.File) => {
+            if (fs.existsSync(file.path)) {
+              try {
+                fs.unlinkSync(file.path);
+              } catch (err) {
+                console.error("Error deleting file:", err);
+              }
+            }
+          });
+        }
+        return res.status(403).json({
+          ok: false,
+          message: "Vous n'avez pas le droit de modifier ce rendez-vous",
+        });
+      }
+
+      if (!req.files || !Array.isArray(req.files) || req.files.length === 0) {
+        return res.status(400).json({
+          ok: false,
+          message: "Aucune image fournie",
+        });
+      }
+
+      // Add new images to existing ones
+      const newImagePaths = (req.files as Express.Multer.File[]).map(
+        (file) => `/uploads/rdv_images/${file.filename}`
+      );
+
+      if (!appointment.images) {
+        appointment.images = [];
+      }
+      appointment.images = [...appointment.images, ...newImagePaths];
+      await appointment.save();
+
+      return res.status(200).json({
+        ok: true,
+        message: "Images uploadées avec succès",
+        appointment: appointment.toJSON(),
+      });
+    } catch (err: any) {
+      // Clean up uploaded files on error
+      if (req.files && Array.isArray(req.files)) {
+        req.files.forEach((file: Express.Multer.File) => {
+          if (fs.existsSync(file.path)) {
+            try {
+              fs.unlinkSync(file.path);
+            } catch (deleteErr) {
+              console.error("Error deleting file:", deleteErr);
+            }
+          }
+        });
+      }
+      console.error("Upload images error:", err);
+      return res.status(500).json({
+        ok: false,
+        message: err?.message ?? "Erreur serveur",
+      });
+    }
+  }
+);
+
+// Upload PDF report for appointment
+router.post(
+  "/:id/pdf",
+  authenticateToken,
+  uploadRdvPdfSingle,
+  async (req: Request, res: Response) => {
+    try {
+      const userId = req.user?.id;
+      const userType = req.user?.type;
+      const appointmentId = req.params.id;
+
+      if (!userId || userType !== 'workshop') {
+        // Clean up uploaded file if unauthorized
+        if (req.file) {
+          if (fs.existsSync(req.file.path)) {
+            try {
+              fs.unlinkSync(req.file.path);
+            } catch (err) {
+              console.error("Error deleting file:", err);
+            }
+          }
+        }
+        return res.status(401).json({
+          ok: false,
+          message: "Atelier non authentifié",
+        });
+      }
+
+      const appointment = await RendezVousWorkshop.findById(appointmentId);
+
+      if (!appointment) {
+        // Clean up uploaded file
+        if (req.file) {
+          if (fs.existsSync(req.file.path)) {
+            try {
+              fs.unlinkSync(req.file.path);
+            } catch (err) {
+              console.error("Error deleting file:", err);
+            }
+          }
+        }
+        return res.status(404).json({
+          ok: false,
+          message: "Rendez-vous non trouvé",
+        });
+      }
+
+      // Verify appointment belongs to workshop
+      if (appointment.id_workshop.toString() !== userId) {
+        // Clean up uploaded file
+        if (req.file) {
+          if (fs.existsSync(req.file.path)) {
+            try {
+              fs.unlinkSync(req.file.path);
+            } catch (err) {
+              console.error("Error deleting file:", err);
+            }
+          }
+        }
+        return res.status(403).json({
+          ok: false,
+          message: "Vous n'avez pas le droit de modifier ce rendez-vous",
+        });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({
+          ok: false,
+          message: "Aucun fichier PDF fourni",
+        });
+      }
+
+      // Delete old PDF if exists
+      if (appointment.rapport_pdf) {
+        const oldPdfPath = appointment.rapport_pdf;
+        const relativePdfPath = oldPdfPath.startsWith('/uploads/rdv_pdf/')
+          ? oldPdfPath.substring('/uploads/rdv_pdf/'.length)
+          : oldPdfPath.replace(/^\/uploads\/rdv_pdf\//, '');
+        const fullPath = path.join(process.cwd(), 'uploads', 'rdv_pdf', relativePdfPath);
+        
+        if (fs.existsSync(fullPath)) {
+          try {
+            fs.unlinkSync(fullPath);
+          } catch (err) {
+            console.error("Error deleting old PDF file:", err);
+          }
+        }
+      }
+
+      // Update PDF path
+      appointment.rapport_pdf = `/uploads/rdv_pdf/${req.file.filename}`;
+      await appointment.save();
+
+      return res.status(200).json({
+        ok: true,
+        message: "Rapport PDF uploadé avec succès",
+        appointment: appointment.toJSON(),
+      });
+    } catch (err: any) {
+      // Clean up uploaded file on error
+      if (req.file) {
+        if (fs.existsSync(req.file.path)) {
+          try {
+            fs.unlinkSync(req.file.path);
+          } catch (deleteErr) {
+            console.error("Error deleting file:", deleteErr);
+          }
+        }
+      }
+      console.error("Upload PDF error:", err);
+      return res.status(500).json({
+        ok: false,
+        message: err?.message ?? "Erreur serveur",
+      });
+    }
+  }
+);
+
+// Delete image from appointment
+router.delete(
+  "/:id/images/:imageIndex",
+  authenticateToken,
+  async (req: Request, res: Response) => {
+    try {
+      const userId = req.user?.id;
+      const userType = req.user?.type;
+      const appointmentId = req.params.id;
+      const imageIndex = parseInt(req.params.imageIndex);
+
+      if (!userId || userType !== 'workshop') {
+        return res.status(401).json({
+          ok: false,
+          message: "Atelier non authentifié",
+        });
+      }
+
+      const appointment = await RendezVousWorkshop.findById(appointmentId);
+
+      if (!appointment) {
+        return res.status(404).json({
+          ok: false,
+          message: "Rendez-vous non trouvé",
+        });
+      }
+
+      // Verify appointment belongs to workshop
+      if (appointment.id_workshop.toString() !== userId) {
+        return res.status(403).json({
+          ok: false,
+          message: "Vous n'avez pas le droit de modifier ce rendez-vous",
+        });
+      }
+
+      if (!appointment.images || imageIndex < 0 || imageIndex >= appointment.images.length) {
+        return res.status(400).json({
+          ok: false,
+          message: "Index d'image invalide",
+        });
+      }
+
+      // Delete image file
+      const imagePath = appointment.images[imageIndex];
+      const relativeImagePath = imagePath.startsWith('/uploads/rdv_images/')
+        ? imagePath.substring('/uploads/rdv_images/'.length)
+        : imagePath.replace(/^\/uploads\/rdv_images\//, '');
+      const fullPath = path.join(process.cwd(), 'uploads', 'rdv_images', relativeImagePath);
+
+      if (fs.existsSync(fullPath)) {
+        try {
+          fs.unlinkSync(fullPath);
+        } catch (err) {
+          console.error("Error deleting image file:", err);
+        }
+      }
+
+      // Remove image from array
+      appointment.images.splice(imageIndex, 1);
+      await appointment.save();
+
+      return res.status(200).json({
+        ok: true,
+        message: "Image supprimée avec succès",
+        appointment: appointment.toJSON(),
+      });
+    } catch (err: any) {
+      console.error("Delete image error:", err);
       return res.status(500).json({
         ok: false,
         message: err?.message ?? "Erreur serveur",

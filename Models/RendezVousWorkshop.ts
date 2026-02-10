@@ -30,7 +30,7 @@ const RendezVousWorkshopSchema = new Schema(
     },
     status: { 
       type: String, 
-      enum: ['en_attente', 'accepted', 'refused'],
+      enum: ['en_attente', 'accepted', 'refused', 'en_cours', 'finish'],
       default: 'en_attente' 
     },
     images: [{ 

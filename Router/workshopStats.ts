@@ -69,8 +69,17 @@ router.get(
         status: 'refused'
       });
 
-      // Count completed appointments (accepted or refused)
-      const completedAppointmentsCount = acceptedAppointmentsCount + refusedAppointmentsCount;
+      // Count en_cours appointments
+      const enCoursAppointmentsCount = await RendezVousWorkshop.countDocuments({ 
+        id_workshop: userIdObjectId,
+        status: 'en_cours'
+      });
+
+      // Count completed appointments (only status: 'finish')
+      const completedAppointmentsCount = await RendezVousWorkshop.countDocuments({ 
+        id_workshop: userIdObjectId,
+        status: 'finish'
+      });
 
       // Get monthly statistics for the last 6 months
       const monthlyStats = [];
@@ -87,7 +96,7 @@ router.get(
         
         const monthCompleted = await RendezVousWorkshop.countDocuments({
           id_workshop: userIdObjectId,
-          status: { $in: ['accepted', 'refused'] },
+          status: 'finish',
           createdAt: { $gte: startOfMonth, $lte: endOfMonth }
         });
         
@@ -182,9 +191,9 @@ router.get(
         .sort({ time: 1 }) // Sort by time ascending
         .lean();
 
-      // Count completed (status: 'accepted' or 'refused')
+      // Count completed (status: 'finish')
       const completedCount = todayAppointments.filter(
-        apt => apt.status === 'accepted' || apt.status === 'refused'
+        apt => apt.status === 'finish'
       ).length;
 
       // Calculate progress percentage
