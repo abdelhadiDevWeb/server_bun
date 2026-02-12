@@ -9,6 +9,8 @@ import rdvWorkshopRouter from "./rdvWorkshop";
 import notificationRouter from "./notification";
 import sellerStatsRouter from "./sellerStats";
 import workshopStatsRouter from "./workshopStats";
+import adminRouter from "./admin";
+import abonnementRouter from "./abonnement";
 
 const router = Router();
 
@@ -26,6 +28,8 @@ router.use("/rdv-workshop", rdvWorkshopRouter);
 router.use("/notification", notificationRouter);
 router.use("/seller-stats", sellerStatsRouter);
 router.use("/workshop-stats", workshopStatsRouter);
+router.use("/admin", adminRouter);
+router.use("/abonnement", abonnementRouter);
 
 export default router;
 
