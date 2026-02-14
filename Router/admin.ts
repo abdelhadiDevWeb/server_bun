@@ -6,6 +6,12 @@ import { Car } from "../Models/Car";
 import { ClientAbonnement } from "../Models/ClientAbonnement";
 import { RendezVousWorkshop } from "../Models/RendezVousWorkshop";
 import { authenticateToken, requireAdmin } from "../middleware/auth.middleware";
+import bcrypt from "bcrypt";
+import Joi from "joi";
+import { uploadUserImageSingle } from "../middleware/upload.middleware";
+import path from "path";
+import fs from "fs";
+import mongoose from "mongoose";
 
 const router = Router();
 
@@ -676,6 +682,547 @@ router.get("/finance", authenticateToken, requireAdmin, async (req: Request, res
     return res.status(500).json({
       ok: false,
       message: "Erreur lors de la récupération des données financières",
+      error: error.message,
+    });
+  }
+});
+
+// Get current admin profile
+router.get("/profile", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: "Utilisateur non authentifié",
+      });
+    }
+
+    const user = await User.findById(userId).select('-password').lean();
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        message: "Utilisateur non trouvé",
+      });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      user: {
+        ...user,
+        id: user._id?.toString() || user.id,
+      },
+    });
+  } catch (error: any) {
+    console.error("Error fetching profile:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la récupération du profil",
+      error: error.message,
+    });
+  }
+});
+
+// Update admin profile
+const updateProfileSchema = Joi.object({
+  firstName: Joi.string().trim().min(2).max(50).optional(),
+  lastName: Joi.string().trim().min(2).max(50).optional(),
+  email: Joi.string().email().trim().lowercase().optional(),
+  phone: Joi.string().trim().optional(),
+});
+
+router.patch("/profile", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: "Utilisateur non authentifié",
+      });
+    }
+
+    const { error, value } = updateProfileSchema.validate(req.body, {
+      abortEarly: false,
+      stripUnknown: true,
+    });
+
+    if (error) {
+      const errors = error.details.map((detail) => detail.message);
+      return res.status(400).json({
+        ok: false,
+        message: "Erreur de validation",
+        errors,
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        message: "Utilisateur non trouvé",
+      });
+    }
+
+    // Check if email is already taken by another user
+    if (value.email && value.email !== user.email) {
+      const existingUser = await User.findOne({ email: value.email });
+      if (existingUser) {
+        return res.status(400).json({
+          ok: false,
+          message: "Cet email est déjà utilisé",
+        });
+      }
+    }
+
+    // Check if phone is already taken by another user
+    if (value.phone && value.phone !== user.phone) {
+      const existingUser = await User.findOne({ phone: value.phone });
+      if (existingUser) {
+        return res.status(400).json({
+          ok: false,
+          message: "Ce numéro de téléphone est déjà utilisé",
+        });
+      }
+    }
+
+    // Update fields
+    if (value.firstName) user.firstName = value.firstName;
+    if (value.lastName) user.lastName = value.lastName;
+    if (value.email) user.email = value.email;
+    if (value.phone) user.phone = value.phone;
+
+    await user.save();
+
+    const userResponse = user.toObject();
+    delete userResponse.password;
+
+    return res.status(200).json({
+      ok: true,
+      message: "Profil mis à jour avec succès",
+      user: {
+        ...userResponse,
+        id: userResponse._id?.toString() || userResponse.id,
+      },
+    });
+  } catch (error: any) {
+    console.error("Error updating profile:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la mise à jour du profil",
+      error: error.message,
+    });
+  }
+});
+
+// Upload profile image
+router.post("/profile/image", authenticateToken, requireAdmin, uploadUserImageSingle, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: "Utilisateur non authentifié",
+      });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({
+        ok: false,
+        message: "Aucun fichier fourni",
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        message: "Utilisateur non trouvé",
+      });
+    }
+
+    // Delete old profile image if exists
+    if (user.profileImage) {
+      const oldImagePath = path.join(process.cwd(), user.profileImage);
+      if (fs.existsSync(oldImagePath)) {
+        try {
+          fs.unlinkSync(oldImagePath);
+        } catch (err) {
+          console.error("Error deleting old profile image:", err);
+        }
+      }
+    }
+
+    // Save new profile image path
+    const imagePath = `uploads/users_images/${req.file.filename}`;
+    user.profileImage = imagePath;
+    await user.save();
+
+    const userResponse = user.toObject();
+    delete userResponse.password;
+
+    return res.status(200).json({
+      ok: true,
+      message: "Image de profil mise à jour avec succès",
+      user: {
+        ...userResponse,
+        id: userResponse._id?.toString() || userResponse.id,
+      },
+    });
+  } catch (error: any) {
+    console.error("Error uploading profile image:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de l'upload de l'image",
+      error: error.message,
+    });
+  }
+});
+
+// Change admin password
+const changePasswordSchema = Joi.object({
+  currentPassword: Joi.string().required().messages({
+    "any.required": "Le mot de passe actuel est requis",
+  }),
+  newPassword: Joi.string()
+    .min(8)
+    .max(128)
+    .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/)
+    .required()
+    .messages({
+      "string.min": "Le nouveau mot de passe doit contenir au moins 8 caractères",
+      "string.max": "Le nouveau mot de passe ne peut pas dépasser 128 caractères",
+      "string.pattern.base":
+        "Le nouveau mot de passe doit contenir au moins une majuscule, une minuscule, un chiffre et un caractère spécial",
+      "any.required": "Le nouveau mot de passe est requis",
+    }),
+});
+
+router.put("/password", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: "Utilisateur non authentifié",
+      });
+    }
+
+    const { error, value } = changePasswordSchema.validate(req.body, {
+      abortEarly: false,
+      stripUnknown: true,
+    });
+
+    if (error) {
+      const errors = error.details.map((detail) => detail.message);
+      return res.status(400).json({
+        ok: false,
+        message: "Erreur de validation",
+        errors,
+      });
+    }
+
+    const { currentPassword, newPassword } = value;
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        message: "Utilisateur non trouvé",
+      });
+    }
+
+    // Verify current password
+    const isPasswordValid = await bcrypt.compare(currentPassword, user.password);
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        ok: false,
+        message: "Mot de passe actuel incorrect",
+      });
+    }
+
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    user.password = hashedPassword;
+    await user.save();
+
+    return res.status(200).json({
+      ok: true,
+      message: "Mot de passe modifié avec succès",
+    });
+  } catch (error: any) {
+    console.error("Error changing password:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la modification du mot de passe",
+      error: error.message,
+    });
+  }
+});
+
+// Get all admins (except current user)
+router.get("/admins", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: "Utilisateur non authentifié",
+      });
+    }
+
+    const admins = await User.find({ role: 'admin' })
+      .select('-password')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Filter out current user and map _id to id
+    const adminsWithId = admins
+      .filter((admin: any) => admin._id?.toString() !== userId)
+      .map((admin: any) => ({
+        ...admin,
+        id: admin._id?.toString() || admin.id,
+      }));
+
+    return res.status(200).json({
+      ok: true,
+      admins: adminsWithId,
+    });
+  } catch (error: any) {
+    console.error("Error fetching admins:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la récupération des administrateurs",
+      error: error.message,
+    });
+  }
+});
+
+// Create new admin
+const createAdminSchema = Joi.object({
+  firstName: Joi.string().trim().min(2).max(50).required().messages({
+    "any.required": "Le prénom est requis",
+    "string.min": "Le prénom doit contenir au moins 2 caractères",
+    "string.max": "Le prénom ne peut pas dépasser 50 caractères",
+  }),
+  lastName: Joi.string().trim().min(2).max(50).required().messages({
+    "any.required": "Le nom est requis",
+    "string.min": "Le nom doit contenir au moins 2 caractères",
+    "string.max": "Le nom ne peut pas dépasser 50 caractères",
+  }),
+  email: Joi.string().email().trim().lowercase().required().messages({
+    "any.required": "L'email est requis",
+    "string.email": "Format d'email invalide",
+  }),
+  phone: Joi.string().trim().required().messages({
+    "any.required": "Le numéro de téléphone est requis",
+  }),
+  password: Joi.string()
+    .min(8)
+    .max(128)
+    .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/)
+    .required()
+    .messages({
+      "any.required": "Le mot de passe est requis",
+      "string.min": "Le mot de passe doit contenir au moins 8 caractères",
+      "string.max": "Le mot de passe ne peut pas dépasser 128 caractères",
+      "string.pattern.base":
+        "Le mot de passe doit contenir au moins une majuscule, une minuscule, un chiffre et un caractère spécial",
+    }),
+});
+
+router.post("/admins", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { error, value } = createAdminSchema.validate(req.body, {
+      abortEarly: false,
+      stripUnknown: true,
+    });
+
+    if (error) {
+      const errors = error.details.map((detail) => detail.message);
+      return res.status(400).json({
+        ok: false,
+        message: "Erreur de validation",
+        errors,
+      });
+    }
+
+    const { firstName, lastName, email, phone, password } = value;
+
+    // Check if email already exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({
+        ok: false,
+        message: "Cet email est déjà utilisé",
+      });
+    }
+
+    // Check if phone already exists
+    const existingPhone = await User.findOne({ phone });
+    if (existingPhone) {
+      return res.status(400).json({
+        ok: false,
+        message: "Ce numéro de téléphone est déjà utilisé",
+      });
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Create admin user
+    const newAdmin = new User({
+      firstName,
+      lastName,
+      email,
+      phone,
+      password: hashedPassword,
+      role: 'admin',
+      status: false, // Admin status is false by default
+      verfie: true, // Admin is automatically verified
+    });
+
+    await newAdmin.save();
+
+    const adminResponse = newAdmin.toObject();
+    delete adminResponse.password;
+
+    return res.status(201).json({
+      ok: true,
+      message: "Administrateur créé avec succès",
+      admin: {
+        ...adminResponse,
+        id: adminResponse._id?.toString() || adminResponse.id,
+      },
+    });
+  } catch (error: any) {
+    console.error("Error creating admin:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la création de l'administrateur",
+      error: error.message,
+    });
+  }
+});
+
+// Update admin status
+router.patch("/admins/:id/status", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    console.log("Update admin status - ID:", id, "Status:", status, "User ID:", req.user?.id);
+
+    if (!id) {
+      return res.status(400).json({
+        ok: false,
+        message: "ID administrateur manquant",
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        ok: false,
+        message: "ID administrateur invalide",
+      });
+    }
+
+    if (typeof status !== 'boolean') {
+      return res.status(400).json({
+        ok: false,
+        message: "Le statut doit être un booléen",
+      });
+    }
+
+    // Don't allow changing own status
+    const currentUserId = req.user?.id;
+    if (!currentUserId) {
+      return res.status(401).json({
+        ok: false,
+        message: "Utilisateur non authentifié",
+      });
+    }
+
+    // Convert both to strings for comparison
+    const currentUserIdStr = String(currentUserId);
+    const idStr = String(id);
+    
+    if (idStr === currentUserIdStr) {
+      return res.status(400).json({
+        ok: false,
+        message: "Vous ne pouvez pas modifier votre propre statut",
+      });
+    }
+
+    const admin = await User.findById(id);
+    if (!admin) {
+      return res.status(404).json({
+        ok: false,
+        message: "Administrateur non trouvé",
+      });
+    }
+
+    if (admin.role !== 'admin') {
+      return res.status(400).json({
+        ok: false,
+        message: "Cet utilisateur n'est pas un administrateur",
+      });
+    }
+
+    admin.status = status;
+    await admin.save();
+
+    const adminResponse = admin.toObject();
+    delete adminResponse.password;
+
+    console.log("Admin status updated successfully:", adminResponse._id, "New status:", status);
+
+    return res.status(200).json({
+      ok: true,
+      message: `Statut de l'administrateur ${status ? 'activé' : 'désactivé'} avec succès`,
+      admin: {
+        ...adminResponse,
+        id: adminResponse._id?.toString() || adminResponse.id,
+      },
+    });
+  } catch (error: any) {
+    console.error("Error updating admin status:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la mise à jour du statut",
+      error: error.message,
+    });
+  }
+});
+
+// Get monthly revenue
+router.get("/monthly-revenue", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+    // Get all abonnements for current month
+    const monthlyAbonnements = await ClientAbonnement.find({
+      createdAt: {
+        $gte: startOfMonth,
+        $lte: endOfMonth,
+      },
+    });
+
+    const monthlyRevenue = monthlyAbonnements.reduce((total, abonnement) => {
+      return total + (abonnement.price || 0);
+    }, 0);
+
+    return res.status(200).json({
+      ok: true,
+      monthlyRevenue: monthlyRevenue,
+      month: now.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }),
+    });
+  } catch (error: any) {
+    console.error("Error fetching monthly revenue:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la récupération du revenu mensuel",
       error: error.message,
     });
   }

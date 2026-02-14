@@ -14,6 +14,21 @@ const CarSchema = new Schema(
     },
     images: [{ type: String, required: true }], // Array of image paths
     owner: { type: Schema.Types.ObjectId, ref: 'User', required: true }, // Reference to User (seller)
+    vin: { 
+      type: String, 
+      trim: true,
+      uppercase: true,
+      default: null 
+    }, // Vehicle Identification Number
+    vinData: { 
+      type: Schema.Types.Mixed, 
+      default: null 
+    }, // VIN decoded data from API
+    vinRemark: {
+      type: String,
+      trim: true,
+      default: null
+    }, // VIN remark (e.g., "2020 Toyota Camry")
   },
   { timestamps: true }
 );

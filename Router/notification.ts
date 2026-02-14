@@ -15,6 +15,8 @@ router.get(
     try {
       const userId = req.user?.id;
       const userType = req.user?.type;
+      const userRole = req.user?.role;
+      const { all } = req.query; // Query parameter to get all notifications (for admin)
 
       if (!userId) {
         return res.status(401).json({
@@ -23,11 +25,14 @@ router.get(
         });
       }
 
-      // Fetch only unread notifications and populate sender manually
-      const notificationsRaw = await Notification.find({ 
-        id_receiver: userId,
-        is_read: false // Only unread notifications
-      })
+      // For admin, get all notifications if 'all' query param is true, otherwise only unread
+      const query: any = { id_receiver: userId };
+      if (userRole !== 'admin' || all !== 'true') {
+        query.is_read = false; // Only unread notifications for non-admin or when 'all' is not specified
+      }
+
+      // Fetch notifications and populate sender manually
+      const notificationsRaw = await Notification.find(query)
         .sort({ createdAt: -1 })
         .limit(50)
         .lean();

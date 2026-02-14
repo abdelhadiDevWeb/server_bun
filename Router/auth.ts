@@ -7,6 +7,7 @@ import Joi from "joi";
 import { User } from "../Models/User";
 import { Workshop } from "../Models/Workshop";
 import { EmailVerification } from "../Models/EmailVerification";
+import { Notification } from "../Models/Notification";
 import { sendVerificationEmail } from "../services/emailService";
 import { AppConfig } from "../config/app.config";
 import { validate, validationSchemas } from "../middleware/validation.middleware";
@@ -20,6 +21,53 @@ const generateCode = (): string => {
   const code = Math.floor(100000 + Math.random() * 900000).toString();
   // Ensure it's exactly 6 digits and trim any whitespace
   return code.trim().padStart(6, '0').slice(0, 6);
+};
+
+// Helper function to notify all admins
+const notifyAllAdmins = async (senderId: string, message: string, type: string = 'other') => {
+  try {
+    // Get all admins
+    const admins = await User.find({ role: 'admin', status: true }).select('_id').lean();
+    
+    if (admins.length === 0) {
+      console.log('No active admins to notify');
+      return;
+    }
+
+    // Get Socket.IO instance
+    const io = (global as any).io;
+    
+    // Create notifications for all admins
+    const notifications = await Promise.all(
+      admins.map(async (admin: any) => {
+        const notification = await Notification.create({
+          id_sender: senderId,
+          id_receiver: admin._id,
+          message,
+          type,
+          is_read: false,
+        });
+
+        // Send notification via Socket.IO to admin room
+        if (io) {
+          io.to(`admin_${admin._id.toString()}`).emit('new_notification', {
+            id: notification._id.toString(),
+            id_sender: senderId,
+            message,
+            type,
+            is_read: false,
+            createdAt: notification.createdAt,
+          });
+        }
+
+        return notification;
+      })
+    );
+
+    console.log(`✅ Notified ${notifications.length} admins about: ${message}`);
+  } catch (error: any) {
+    console.error('Error notifying admins:', error);
+  }
 };
 
 router.post("/register/user", authRateLimiter, validate(validationSchemas.registerUser), async (req: Request, res: Response) => {
@@ -111,6 +159,13 @@ router.post("/register/user", authRateLimiter, validate(validationSchemas.regist
     } else {
       console.log(`✅ Verification email sent to: ${email} with code: ${cleanCode}`);
     }
+
+    // Notify all admins about new user registration
+    await notifyAllAdmins(
+      user._id.toString(),
+      `Un nouveau client s'est inscrit: ${firstName} ${lastName} (${email})`,
+      'other'
+    );
 
     return res.status(201).json({
       ok: true,
@@ -222,6 +277,13 @@ router.post("/register/workshop", authRateLimiter, validate(validationSchemas.re
     } else {
       console.log(`✅ Verification email sent to: ${email} with code: ${cleanCode}`);
     }
+
+    // Notify all admins about new workshop registration
+    await notifyAllAdmins(
+      workshop._id.toString(),
+      `Un nouvel atelier s'est inscrit: ${name} (${email})`,
+      'other'
+    );
 
     return res.status(201).json({
       ok: true,

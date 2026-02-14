@@ -10,6 +10,7 @@ const UserSchema = new Schema(
     role: { type: String, enum: ['client', 'admin'], default: 'client' },
     status: { type: Boolean, default: false },
     verfie: { type: Boolean, default: false },
+    profileImage: { type: String, default: null },
   },
   { timestamps: true }
 );

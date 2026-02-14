@@ -65,6 +65,18 @@ io.on('connection', (socket) => {
     console.log(`Socket ${socket.id} left user_${userId}`);
   });
 
+  // Join admin room when authenticated
+  socket.on('join_admin', (adminId: string) => {
+    socket.join(`admin_${adminId}`);
+    console.log(`Socket ${socket.id} joined admin_${adminId}`);
+  });
+
+  // Leave admin room
+  socket.on('leave_admin', (adminId: string) => {
+    socket.leave(`admin_${adminId}`);
+    console.log(`Socket ${socket.id} left admin_${adminId}`);
+  });
+
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
   });

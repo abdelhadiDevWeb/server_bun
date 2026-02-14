@@ -6,6 +6,7 @@ import { authenticateToken, requireSeller } from "../middleware/auth.middleware"
 import { uploadMultiple } from "../middleware/upload.middleware";
 import { validate, validationSchemas } from "../middleware/validation.middleware";
 import Joi from "joi";
+import "dotenv/config";
 
 const router = Router();
 
@@ -56,9 +57,138 @@ const createCarSchema = Joi.object({
       "number.min": "Le prix ne peut pas être négatif",
       "any.required": "Le prix est requis",
     }),
+  vin: Joi.string()
+    .trim()
+    .length(17)
+    .pattern(/^[A-HJ-NPR-Z0-9]{17}$/)
+    .uppercase()
+    .optional()
+    .messages({
+      "string.length": "Le VIN doit contenir exactement 17 caractères",
+      "string.pattern.base": "Le VIN contient des caractères invalides",
+    }),
   // Status is not sent by user, it's set by admin/system
   // Default will be 'no_proccess' in the model
 });
+
+// Function to verify VIN via Auto.dev API
+async function verifyVIN(vin: string): Promise<{ valid: boolean; data?: any; error?: string; remark?: string }> {
+  try {
+    // Load API key from environment
+    const apiKey = process.env.API_VIN;
+    
+    console.log("🔑 API_VIN check:", apiKey ? "Found" : "NOT FOUND");
+    console.log("🔑 API_VIN value:", apiKey ? `${apiKey.substring(0, 10)}...` : "undefined");
+    
+    if (!apiKey) {
+      console.error("❌ API_VIN not found in environment variables");
+      console.error("❌ Available env vars:", Object.keys(process.env).filter(k => k.includes('VIN') || k.includes('API')));
+      return { valid: false, error: "API VIN key not configured. Please check your .env file." };
+    }
+
+    // Auto.dev API endpoint with apiKey as query parameter
+    const apiUrl = `https://api.auto.dev/vin/${vin}?apiKey=${encodeURIComponent(apiKey)}`;
+    
+    console.log("🔍 Verifying VIN:", vin);
+    console.log("🔗 API URL:", apiUrl.replace(apiKey, '***'));
+    
+    const response = await fetch(apiUrl, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      // Try to get error message from response
+      let errorMessage = `Erreur API: ${response.status}`;
+      try {
+        const errorData = await response.json();
+        console.error("❌ VIN API Error:", errorData);
+        
+        // Extract error message from various possible formats
+        if (typeof errorData === 'string') {
+          errorMessage = errorData;
+        } else if (errorData.message && typeof errorData.message === 'string') {
+          errorMessage = errorData.message;
+        } else if (errorData.error && typeof errorData.error === 'string') {
+          errorMessage = errorData.error;
+        } else if (errorData.details && typeof errorData.details === 'string') {
+          errorMessage = errorData.details;
+        } else if (errorData.message && typeof errorData.message === 'object') {
+          // If message is an object, extract the error field
+          errorMessage = errorData.message.error || errorData.message.message || 'VIN invalide';
+        } else {
+          errorMessage = 'VIN invalide ou non trouvé';
+        }
+      } catch (e) {
+        // If response is not JSON, use status text
+        try {
+          const text = await response.text();
+          console.error("❌ VIN API Error (text):", text.substring(0, 200));
+          errorMessage = response.statusText || text || errorMessage;
+        } catch (textError) {
+          errorMessage = response.statusText || errorMessage;
+        }
+      }
+      return { valid: false, error: errorMessage };
+    }
+
+    const data = await response.json();
+    console.log("✅ VIN API Response received");
+    
+    // Check if VIN is valid - Auto.dev returns data if VIN is valid
+    // If VIN is invalid, API usually returns an error or empty data
+    if (!data) {
+      return { valid: false, error: "VIN invalide ou non trouvé" };
+    }
+    
+    if (data.error) {
+      let errorMsg = "VIN invalide ou non trouvé";
+      if (typeof data.error === 'string') {
+        errorMsg = data.error;
+      } else if (typeof data.error === 'object' && data.error.message) {
+        errorMsg = typeof data.error.message === 'string' ? data.error.message : 'VIN invalide';
+      }
+      return { valid: false, error: errorMsg };
+    }
+    
+    if (data.message && typeof data.message === 'string' && data.message.toLowerCase().includes('error')) {
+      return { valid: false, error: data.message };
+    }
+
+    // Extract useful information for remark from Auto.dev response
+    // Auto.dev typically returns: make, model, year, etc.
+    const make = data.make || data.manufacturer || '';
+    const model = data.model || '';
+    const year = data.year || data.modelYear || '';
+    
+    // Create a simple remark
+    let remark = '';
+    if (year && make && model) {
+      remark = `${year} ${make} ${model}`;
+    } else if (make && model) {
+      remark = `${make} ${model}`;
+    } else if (make) {
+      remark = make;
+    } else if (model) {
+      remark = model;
+    } else {
+      remark = 'VIN vérifié';
+    }
+
+    // VIN is valid, return the data and remark
+    return { 
+      valid: true, 
+      data: data,
+      remark: remark
+    };
+  } catch (error: any) {
+    console.error("Error verifying VIN:", error);
+    return { valid: false, error: error.message || "Erreur lors de la vérification du VIN" };
+  }
+}
 
 // Create car endpoint
 router.post(
@@ -87,7 +217,7 @@ router.post(
       next();
     });
   },
-  (req: Request, res: Response) => {
+  async (req: Request, res: Response) => {
     try {
       // Validate text fields (after multer has processed files)
       const { error, value } = createCarSchema.validate(req.body, {
@@ -153,18 +283,54 @@ router.post(
 
       console.log("✅ Create car - User ID:", userId);
 
+      // Verify VIN if provided
+      let vinData = null;
+      let vinRemark = null;
+      if (value.vin) {
+        const vinResult = await verifyVIN(value.vin.toUpperCase());
+        if (!vinResult.valid) {
+          // Clean up uploaded files
+          if (req.files && Array.isArray(req.files)) {
+            const fs = require("fs");
+            req.files.forEach((file: Express.Multer.File) => {
+              if (fs.existsSync(file.path)) {
+                try {
+                  fs.unlinkSync(file.path);
+                } catch (err) {
+                  console.error("Error deleting file:", err);
+                }
+              }
+            });
+          }
+          
+          return res.status(400).json({
+            ok: false,
+            message: vinResult.error || "VIN invalide",
+          });
+        }
+        vinData = vinResult.data;
+        vinRemark = vinResult.remark;
+      }
+
       // Get image paths
       const imagePaths = (req.files as Express.Multer.File[]).map(
         (file) => `/uploads/images/${file.filename}`
       );
 
       // Create car - status defaults to 'no_proccess' in model
-      const carData = {
+      const carData: any = {
         ...value,
         images: imagePaths,
         owner: userId,
         status: 'no_proccess', // Explicitly set default status
       };
+
+      // Add VIN and VIN data if provided
+      if (value.vin) {
+        carData.vin = value.vin.toUpperCase();
+        carData.vinData = vinData;
+        carData.vinRemark = vinRemark; // Store the remark for display
+      }
 
       Car.create(carData)
         .then((car) => {
@@ -657,5 +823,52 @@ router.delete(
     }
   }
 );
+
+// Verify VIN endpoint
+router.post("/verify-vin", authenticateToken, requireSeller, async (req: Request, res: Response) => {
+  try {
+    const { vin } = req.body;
+
+    if (!vin || typeof vin !== 'string') {
+      return res.status(400).json({
+        ok: false,
+        message: "VIN manquant",
+      });
+    }
+
+    if (vin.length !== 17) {
+      return res.status(400).json({
+        ok: false,
+        message: "Le VIN doit contenir exactement 17 caractères",
+      });
+    }
+
+    const vinResult = await verifyVIN(vin.toUpperCase());
+    
+    if (!vinResult.valid) {
+      return res.status(400).json({
+        ok: false,
+        valid: false,
+        message: vinResult.error || "VIN invalide",
+      });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      valid: true,
+      message: "VIN valide",
+      remark: vinResult.remark || "VIN vérifié",
+      data: vinResult.data,
+    });
+  } catch (error: any) {
+    console.error("Error verifying VIN:", error);
+    return res.status(500).json({
+      ok: false,
+      valid: false,
+      message: "Erreur lors de la vérification du VIN",
+      error: error.message,
+    });
+  }
+});
 
 export default router;
