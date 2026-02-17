@@ -102,7 +102,19 @@ async function verifyVIN(vin: string): Promise<{ valid: boolean; data?: any; err
 
     if (!response.ok) {
       // Try to get error message from response
-      let errorMessage = `Erreur API: ${response.status}`;
+      let errorMessage = 'VIN invalide ou non trouvé';
+      
+      // Handle different HTTP status codes
+      if (response.status === 404) {
+        errorMessage = 'VIN non trouvé. Ce numéro VIN n\'existe pas.';
+      } else if (response.status === 400) {
+        errorMessage = 'VIN invalide. Le format du VIN est incorrect.';
+      } else if (response.status === 401 || response.status === 403) {
+        errorMessage = 'Erreur d\'authentification avec l\'API VIN. Veuillez contacter le support.';
+      } else if (response.status >= 500) {
+        errorMessage = 'Erreur serveur lors de la vérification du VIN. Veuillez réessayer plus tard.';
+      }
+      
       try {
         const errorData = await response.json();
         console.error("❌ VIN API Error:", errorData);
@@ -118,71 +130,187 @@ async function verifyVIN(vin: string): Promise<{ valid: boolean; data?: any; err
           errorMessage = errorData.details;
         } else if (errorData.message && typeof errorData.message === 'object') {
           // If message is an object, extract the error field
-          errorMessage = errorData.message.error || errorData.message.message || 'VIN invalide';
-        } else {
-          errorMessage = 'VIN invalide ou non trouvé';
+          errorMessage = errorData.message.error || errorData.message.message || errorMessage;
         }
       } catch (e) {
         // If response is not JSON, use status text
         try {
           const text = await response.text();
           console.error("❌ VIN API Error (text):", text.substring(0, 200));
-          errorMessage = response.statusText || text || errorMessage;
+          if (text && text.trim().length > 0) {
+            errorMessage = text.substring(0, 200);
+          }
         } catch (textError) {
-          errorMessage = response.statusText || errorMessage;
+          // Keep the default error message based on status code
         }
       }
       return { valid: false, error: errorMessage };
     }
 
     const data = await response.json();
-    console.log("✅ VIN API Response received");
+    console.log("✅ VIN API Response received:", JSON.stringify(data).substring(0, 500));
     
-    // Check if VIN is valid - Auto.dev returns data if VIN is valid
-    // If VIN is invalid, API usually returns an error or empty data
-    if (!data) {
-      return { valid: false, error: "VIN invalide ou non trouvé" };
+    // Check if response is null, undefined, or empty
+    if (!data || (typeof data === 'object' && Object.keys(data).length === 0)) {
+      console.log("❌ VIN validation failed: No data or empty object");
+      return { valid: false, error: "VIN non trouvé. Ce numéro VIN n'existe pas." };
     }
     
+    // Check for error in response (various formats)
     if (data.error) {
-      let errorMsg = "VIN invalide ou non trouvé";
+      let errorMsg = "VIN non trouvé. Ce numéro VIN n'existe pas.";
       if (typeof data.error === 'string') {
         errorMsg = data.error;
       } else if (typeof data.error === 'object' && data.error.message) {
-        errorMsg = typeof data.error.message === 'string' ? data.error.message : 'VIN invalide';
+        errorMsg = typeof data.error.message === 'string' ? data.error.message : "VIN non trouvé. Ce numéro VIN n'existe pas.";
       }
+      console.log("❌ VIN validation failed: Error in response:", errorMsg);
       return { valid: false, error: errorMsg };
     }
     
-    if (data.message && typeof data.message === 'string' && data.message.toLowerCase().includes('error')) {
-      return { valid: false, error: data.message };
+    // Check for error message or status indicating failure
+    if (data.message && typeof data.message === 'string') {
+      const lowerMessage = data.message.toLowerCase();
+      if (lowerMessage.includes('error') || lowerMessage.includes('not found') || lowerMessage.includes('invalid') || lowerMessage.includes('does not exist') || lowerMessage.includes('not available')) {
+        console.log("❌ VIN validation failed: Error message found:", data.message);
+        return { valid: false, error: "VIN non trouvé. Ce numéro VIN n'existe pas." };
+      }
+    }
+    
+    // Check for status field indicating failure
+    if (data.status && (data.status === 'error' || data.status === 'failed' || data.status === 'not_found' || data.status === 'invalid')) {
+      console.log("❌ VIN validation failed: Status indicates failure:", data.status);
+      return { valid: false, error: "VIN non trouvé. Ce numéro VIN n'existe pas." };
+    }
+    
+    // Extract essential VIN data - check multiple possible field names
+    const make = (data.make || data.manufacturer || data.manufacturerName || '').toString().trim();
+    const model = (data.model || data.modelName || '').toString().trim();
+    const year = (data.year || data.modelYear || data.manufactureYear || '').toString().trim();
+    
+    console.log("🔍 VIN Data extracted - make:", make, "model:", model, "year:", year);
+    
+    // STRICT VALIDATION: VIN must have BOTH make AND model to be considered valid
+    // If either is missing or empty, the VIN doesn't exist
+    if (!make || make === '' || make === 'null' || make === 'undefined' || !model || model === '' || model === 'null' || model === 'undefined') {
+      console.log("❌ VIN validation failed: Missing essential data - make:", make, "model:", model);
+      return { valid: false, error: "VIN non trouvé. Ce numéro VIN n'existe pas." };
+    }
+    
+    // Additional validation: check if make/model are meaningful (not just spaces, special chars, or default values)
+    if (make.length < 2 || model.length < 2) {
+      console.log("❌ VIN validation failed: Make or model too short");
+      return { valid: false, error: "VIN non trouvé. Ce numéro VIN n'existe pas." };
+    }
+    
+    // Check for common invalid/default values that APIs sometimes return
+    const invalidValues = ['n/a', 'na', 'none', 'null', 'undefined', 'unknown', 'not available', 'not specified', '-', '--', '---'];
+    const makeLower = make.toLowerCase();
+    const modelLower = model.toLowerCase();
+    
+    if (invalidValues.includes(makeLower) || invalidValues.includes(modelLower)) {
+      console.log("❌ VIN validation failed: Invalid default values detected - make:", make, "model:", model);
+      return { valid: false, error: "VIN non trouvé. Ce numéro VIN n'existe pas." };
+    }
+    
+    // Check if the response looks like an error response (e.g., has error-like structure)
+    if (data.code || data.statusCode || (data.message && typeof data.message === 'object')) {
+      console.log("❌ VIN validation failed: Response structure suggests error");
+      return { valid: false, error: "VIN non trouvé. Ce numéro VIN n'existe pas." };
+    }
+    
+    // Final check: if we have make and model but they seem to be placeholder values
+    // Some APIs return placeholder data even for invalid VINs
+    if (make.length > 50 || model.length > 50) {
+      console.log("❌ VIN validation failed: Make or model too long (likely placeholder)");
+      return { valid: false, error: "VIN non trouvé. Ce numéro VIN n'existe pas." };
     }
 
+    // Additional validation: Check if the data structure looks valid
+    // Some APIs return empty objects or minimal data even for invalid VINs
+    const hasValidData = make && model && make.length >= 2 && model.length >= 2;
+    
+    if (!hasValidData) {
+      console.log("❌ VIN validation failed: Data structure invalid - make:", make, "model:", model);
+      return { valid: false, error: "VIN non trouvé. Ce numéro VIN n'existe pas." };
+    }
+    
+    // Check if make/model contain only numbers or special characters (invalid)
+    // Valid make/model should contain letters
+    const makeHasLetters = /[a-zA-Z]/.test(make);
+    const modelHasLetters = /[a-zA-Z]/.test(model);
+    
+    if (!makeHasLetters || !modelHasLetters) {
+      console.log("❌ VIN validation failed: Make or model contains no letters - make:", make, "model:", model);
+      return { valid: false, error: "VIN non trouvé. Ce numéro VIN n'existe pas." };
+    }
+    
+    // Check if the response has very few fields (likely invalid VIN)
+    // Valid VIN responses usually have multiple fields (make, model, year, etc.)
+    const dataKeys = Object.keys(data);
+    const essentialFields = ['make', 'model', 'manufacturer', 'year', 'modelYear'];
+    const hasEssentialFields = essentialFields.some(field => dataKeys.includes(field) && data[field]);
+    
+    if (!hasEssentialFields && dataKeys.length < 3) {
+      console.log("❌ VIN validation failed: Response has too few fields - keys:", dataKeys);
+      return { valid: false, error: "VIN non trouvé. Ce numéro VIN n'existe pas." };
+    }
+    
+    // Final validation before accepting: ensure make and model are not just random strings
+    // They should be reasonable length and contain proper characters
+    if (make.length < 2 || make.length > 30 || model.length < 2 || model.length > 50) {
+      console.log("❌ VIN validation failed: Make or model length out of reasonable range");
+      return { valid: false, error: "VIN non trouvé. Ce numéro VIN n'existe pas." };
+    }
+    
+    // At this point, we have confirmed that make and model exist and are valid
     // Extract useful information for remark from Auto.dev response
     // Auto.dev typically returns: make, model, year, etc.
-    const make = data.make || data.manufacturer || '';
-    const model = data.model || '';
-    const year = data.year || data.modelYear || '';
-    
     // Create a simple remark
     let remark = '';
     if (year && make && model) {
       remark = `${year} ${make} ${model}`;
     } else if (make && model) {
       remark = `${make} ${model}`;
-    } else if (make) {
-      remark = make;
-    } else if (model) {
-      remark = model;
     } else {
-      remark = 'VIN vérifié';
+      // This should not happen since we validated make and model above
+      // But if it does, consider it invalid
+      console.log("❌ VIN validation failed: Unable to create remark from data");
+      return { valid: false, error: "VIN non trouvé. Ce numéro VIN n'existe pas." };
     }
 
-    // VIN is valid, return the data and remark
+    // Final check: if remark is created but seems invalid, reject
+    if (!remark || remark.trim().length < 3) {
+      console.log("❌ VIN validation failed: Remark is invalid:", remark);
+      return { valid: false, error: "VIN non trouvé. Ce numéro VIN n'existe pas." };
+    }
+
+    console.log("✅ VIN validation successful - remark:", remark);
+    
+    // Extract additional details from the API response
+    const vinDetails = {
+      make: make,
+      model: model,
+      year: year || null,
+      manufacturer: data.manufacturer || make,
+      modelYear: data.modelYear || year || null,
+      bodyType: data.bodyType || data.body || null,
+      engine: data.engine || data.engineType || null,
+      transmission: data.transmission || data.transmissionType || null,
+      driveType: data.driveType || data.drive || null,
+      fuelType: data.fuelType || data.fuel || null,
+      doors: data.doors || null,
+      seats: data.seats || null,
+      color: data.color || null,
+      vin: vin,
+    };
+    
+    // VIN is valid, return the data, remark, and details
     return { 
       valid: true, 
       data: data,
-      remark: remark
+      remark: remark,
+      details: vinDetails
     };
   } catch (error: any) {
     console.error("Error verifying VIN:", error);
@@ -859,6 +987,7 @@ router.post("/verify-vin", authenticateToken, requireSeller, async (req: Request
       message: "VIN valide",
       remark: vinResult.remark || "VIN vérifié",
       data: vinResult.data,
+      details: vinResult.details || null,
     });
   } catch (error: any) {
     console.error("Error verifying VIN:", error);

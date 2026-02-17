@@ -5,8 +5,7 @@ const UserImageSchema = new Schema(
     id_owner: { 
       type: Schema.Types.ObjectId, 
       required: true, 
-      ref: 'User',
-      index: true 
+      ref: 'User'
     },
     image: { 
       type: String, 

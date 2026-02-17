@@ -11,8 +11,7 @@ const RendezVousWorkshopSchema = new Schema(
     id_owner_car: { 
       type: Schema.Types.ObjectId, 
       required: true, 
-      ref: 'User',
-      index: true
+      ref: 'User'
     },
     id_car: { 
       type: Schema.Types.ObjectId, 

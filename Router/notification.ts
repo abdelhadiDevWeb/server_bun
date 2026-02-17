@@ -156,4 +156,86 @@ router.put(
   }
 );
 
+// Mark all message notifications as read
+router.put(
+  "/read-all-messages",
+  authenticateToken,
+  async (req: Request, res: Response) => {
+    try {
+      const userId = req.user?.id;
+
+      if (!userId) {
+        return res.status(401).json({
+          ok: false,
+          message: "Utilisateur non authentifié",
+        });
+      }
+
+      await Notification.updateMany(
+        { id_receiver: userId, type: 'message', is_read: false },
+        { is_read: true }
+      );
+
+      return res.status(200).json({
+        ok: true,
+        message: "Toutes les notifications de message ont été marquées comme lues",
+      });
+    } catch (err: any) {
+      console.error("Mark all message notifications as read error:", err);
+      return res.status(500).json({
+        ok: false,
+        message: err?.message ?? "Erreur serveur",
+      });
+    }
+  }
+);
+
+// Mark message notifications for a specific chat as read
+router.put(
+  "/read-chat-messages/:otherUserId",
+  authenticateToken,
+  async (req: Request, res: Response) => {
+    try {
+      const userId = req.user?.id;
+      const otherUserId = req.params.otherUserId;
+
+      if (!userId) {
+        return res.status(401).json({
+          ok: false,
+          message: "Utilisateur non authentifié",
+        });
+      }
+
+      if (!otherUserId) {
+        return res.status(400).json({
+          ok: false,
+          message: "ID de l'autre utilisateur requis",
+        });
+      }
+
+      // Mark all message notifications from this user as read
+      await Notification.updateMany(
+        { 
+          id_receiver: userId, 
+          id_sender: otherUserId,
+          type: 'message', 
+          is_read: false 
+        },
+        { is_read: true }
+      );
+
+      return res.status(200).json({
+        ok: true,
+        message: "Notifications de message marquées comme lues",
+      });
+    } catch (err: any) {
+      console.error("Mark chat message notifications as read error:", err);
+      return res.status(500).json({
+        ok: false,
+        message: err?.message ?? "Erreur serveur",
+      });
+    }
+  }
+);
+
 export default router;
