@@ -22,7 +22,7 @@ const NotificationSchema = new Schema(
     },
     type: { 
       type: String, 
-      enum: ['rdv_workshop', 'message', 'done_rdv_workshop', 'cancel_rdv_workshop', 'other'],
+      enum: ['rdv_workshop', 'message', 'done_rdv_workshop', 'cancel_rdv_workshop', 'car_price_warning', 'other'],
       required: true 
     },
   },

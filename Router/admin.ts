@@ -5,6 +5,7 @@ import { Workshop } from "../Models/Workshop";
 import { Car } from "../Models/Car";
 import { ClientAbonnement } from "../Models/ClientAbonnement";
 import { RendezVousWorkshop } from "../Models/RendezVousWorkshop";
+import { Notification } from "../Models/Notification";
 import { authenticateToken, requireAdmin } from "../middleware/auth.middleware";
 import bcrypt from "bcrypt";
 import Joi from "joi";
@@ -144,6 +145,112 @@ router.patch("/users/:id/status", authenticateToken, requireAdmin, async (req: R
     return res.status(500).json({
       ok: false,
       message: "Erreur lors de la mise à jour du statut",
+      error: error.message,
+    });
+  }
+});
+
+// Update user certifie status
+router.patch("/users/:id/certifie", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { certifie } = req.body;
+
+    if (typeof certifie !== 'boolean') {
+      return res.status(400).json({
+        ok: false,
+        message: "Le statut certifié doit être un booléen (true/false)",
+      });
+    }
+
+    if (!id || !/^[0-9a-fA-F]{24}$/.test(id)) {
+      return res.status(400).json({
+        ok: false,
+        message: "ID utilisateur invalide",
+      });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      id,
+      { certifie },
+      { new: true }
+    ).select('-password').lean();
+
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        message: "Utilisateur non trouvé",
+      });
+    }
+
+    const userWithId = {
+      ...user,
+      id: (user as any)._id?.toString() || (user as any).id,
+    };
+
+    return res.status(200).json({
+      ok: true,
+      message: "Statut certifié de l'utilisateur mis à jour",
+      user: userWithId,
+    });
+  } catch (error: any) {
+    console.error("Error updating user certifie status:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la mise à jour du statut certifié",
+      error: error.message,
+    });
+  }
+});
+
+// Update workshop certifie status
+router.patch("/workshops/:id/certifie", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { certifie } = req.body;
+
+    if (typeof certifie !== 'boolean') {
+      return res.status(400).json({
+        ok: false,
+        message: "Le statut certifié doit être un booléen (true/false)",
+      });
+    }
+
+    if (!id || !/^[0-9a-fA-F]{24}$/.test(id)) {
+      return res.status(400).json({
+        ok: false,
+        message: "ID atelier invalide",
+      });
+    }
+
+    const workshop = await Workshop.findByIdAndUpdate(
+      id,
+      { certifie },
+      { new: true }
+    ).select('-password').lean();
+
+    if (!workshop) {
+      return res.status(404).json({
+        ok: false,
+        message: "Atelier non trouvé",
+      });
+    }
+
+    const workshopWithId = {
+      ...workshop,
+      id: (workshop as any)._id?.toString() || (workshop as any).id,
+    };
+
+    return res.status(200).json({
+      ok: true,
+      message: "Statut certifié de l'atelier mis à jour",
+      workshop: workshopWithId,
+    });
+  } catch (error: any) {
+    console.error("Error updating workshop certifie status:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la mise à jour du statut certifié",
       error: error.message,
     });
   }
@@ -1223,6 +1330,155 @@ router.get("/monthly-revenue", authenticateToken, requireAdmin, async (req: Requ
     return res.status(500).json({
       ok: false,
       message: "Erreur lors de la récupération du revenu mensuel",
+      error: error.message,
+    });
+  }
+});
+
+// Delete car (admin only)
+router.delete("/cars/:id", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const carId = req.params.id;
+    const adminId = req.user?.id;
+
+    if (!carId || !mongoose.Types.ObjectId.isValid(carId)) {
+      return res.status(400).json({
+        ok: false,
+        message: "ID de voiture invalide",
+      });
+    }
+
+    const car = await Car.findById(carId);
+    if (!car) {
+      return res.status(404).json({
+        ok: false,
+        message: "Voiture non trouvée",
+      });
+    }
+
+    // Delete car images
+    if (car.images && car.images.length > 0) {
+      car.images.forEach((imagePath: string) => {
+        const relativeImagePath = imagePath.startsWith('/uploads/') 
+          ? imagePath.substring('/uploads/'.length) 
+          : imagePath.replace(/^\/uploads\//, '');
+        const fullPath = path.join(process.cwd(), 'uploads', relativeImagePath);
+        
+        if (fs.existsSync(fullPath)) {
+          try {
+            fs.unlinkSync(fullPath);
+          } catch (err) {
+            console.error("Error deleting image file:", err);
+          }
+        }
+      });
+    }
+
+    // Delete related appointments
+    await RendezVousWorkshop.deleteMany({ id_car: carId });
+
+    // Delete the car
+    await Car.deleteOne({ _id: carId });
+
+    console.log(`✅ Car ${carId} deleted by admin ${adminId}`);
+
+    return res.status(200).json({
+      ok: true,
+      message: "Voiture supprimée avec succès",
+    });
+  } catch (error: any) {
+    console.error("Error deleting car:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la suppression de la voiture",
+      error: error.message,
+    });
+  }
+});
+
+// Send warning notification to car owner (admin only)
+router.post("/cars/:id/warning", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const carId = req.params.id;
+    const adminId = req.user?.id;
+    const { message } = req.body; // Custom message from admin
+
+    if (!carId || !mongoose.Types.ObjectId.isValid(carId)) {
+      return res.status(400).json({
+        ok: false,
+        message: "ID de voiture invalide",
+      });
+    }
+
+    const car = await Car.findById(carId).populate('owner', '_id firstName lastName email').lean();
+    if (!car) {
+      return res.status(404).json({
+        ok: false,
+        message: "Voiture non trouvée",
+      });
+    }
+
+    const ownerId = (car.owner as any)?._id;
+    if (!ownerId) {
+      return res.status(400).json({
+        ok: false,
+        message: "Propriétaire de la voiture non trouvé",
+      });
+    }
+
+    // Use custom message or default message
+    const notificationMessage = message && message.trim() 
+      ? message.trim()
+      : `Avertissement: Veuillez corriger le prix de votre véhicule "${car.brand} ${car.model}" dans les 24 heures, sinon il sera supprimé.`;
+
+    // Create warning notification
+    const notification = new Notification({
+      id_sender: adminId,
+      id_receiver: ownerId,
+      message: notificationMessage,
+      type: 'car_price_warning',
+      is_read: false,
+    });
+    await notification.save();
+
+    // Send notification via Socket.IO
+    const io = (global as any).io;
+    if (io) {
+      io.to(`user_${ownerId.toString()}`).emit('new_notification', {
+        id: notification._id.toString(),
+        id_sender: adminId,
+        message: notification.message,
+        type: notification.type,
+        is_read: false,
+        createdAt: notification.createdAt,
+        carId: carId,
+      });
+      console.log(`📢 Warning notification sent to user_${ownerId.toString()}`);
+    }
+
+    // Schedule car deletion after 24 hours
+    // We'll store a flag in the car document or use a scheduled job
+    // For now, we'll add a field to track the warning
+    await Car.updateOne(
+      { _id: carId },
+      { 
+        $set: { 
+          warningSentAt: new Date(),
+          warningExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) // 24 hours from now
+        } 
+      }
+    );
+
+    return res.status(200).json({
+      ok: true,
+      message: "Avertissement envoyé avec succès",
+      notification: notification.toJSON(),
+    });
+  } catch (error: any) {
+    console.error("Error sending warning:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de l'envoi de l'avertissement",
       error: error.message,
     });
   }

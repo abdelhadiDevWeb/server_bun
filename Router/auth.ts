@@ -496,11 +496,23 @@ router.post("/login", authRateLimiter, validate(validationSchemas.login), async 
     // Remove password from response
     const { password: _, ...userWithoutPassword } = user;
 
+    // For workshops, add workshopType field and set type to "workshop"
+    let userResponse = userWithoutPassword;
+    if (userType === "workshop") {
+      userResponse = {
+        ...userWithoutPassword,
+        type: "workshop",
+        workshopType: (userWithoutPassword as any).type, // The workshop type (mechanic, paint_vehicle, etc.)
+        price_visit_mec: (userWithoutPassword as any).price_visit_mec,
+        price_visit_paint: (userWithoutPassword as any).price_visit_paint,
+      };
+    }
+
     return res.status(200).json({
       ok: true,
       message: "Connexion réussie",
       token,
-      user: userWithoutPassword,
+      user: userResponse,
       type: userType,
       role: userRole, // Include role in response
     });
@@ -536,6 +548,7 @@ router.get("/user/:id", async (req: Request, res: Response) => {
         phone: user.phone,
         status: user.status,
         role: user.role,
+        certifie: user.certifie,
       },
     });
   } catch (err: any) {
@@ -578,6 +591,7 @@ router.get("/me", authenticateToken, async (req: Request, res: Response) => {
           phone: user.phone,
           status: user.status,
           role: user.role,
+          certifie: user.certifie,
           type: "user",
         },
       });
@@ -598,8 +612,12 @@ router.get("/me", authenticateToken, async (req: Request, res: Response) => {
           adr: workshop.adr,
           phone: workshop.phone,
           status: workshop.status,
-          type: workshop.type || "workshop", // Include workshop type (mechanic or car_cover)
+          type: "workshop",
+          workshopType: workshop.type, // Include workshop type (mechanic, paint_vehicle, or mechanic_paint_inspector)
           verfie: workshop.verfie,
+          certifie: workshop.certifie,
+          price_visit_mec: workshop.price_visit_mec,
+          price_visit_paint: workshop.price_visit_paint,
         },
       });
     }
@@ -665,6 +683,22 @@ const updateProfileSchema = Joi.object({
     .messages({
       "string.max": "L'adresse ne peut pas dépasser 200 caractères",
     }),
+  price_visit_mec: Joi.number()
+    .min(0)
+    .optional()
+    .allow(null)
+    .messages({
+      "number.min": "Le prix de visite mécanique doit être positif ou nul",
+      "number.base": "Le prix de visite mécanique doit être un nombre",
+    }),
+  price_visit_paint: Joi.number()
+    .min(0)
+    .optional()
+    .allow(null)
+    .messages({
+      "number.min": "Le prix de visite peinture doit être positif ou nul",
+      "number.base": "Le prix de visite peinture doit être un nombre",
+    }),
   // Email cannot be changed
 });
 
@@ -711,6 +745,7 @@ router.put(
             phone: user.phone,
             status: user.status,
             role: user.role,
+            certifie: user.certifie,
             type: "user",
           },
         });
@@ -727,6 +762,12 @@ router.put(
         if (req.body.name) workshop.name = req.body.name;
         if (req.body.phone) workshop.phone = req.body.phone;
         if (req.body.adr) workshop.adr = req.body.adr;
+        if (req.body.price_visit_mec !== undefined) {
+          workshop.price_visit_mec = req.body.price_visit_mec === null || req.body.price_visit_mec === '' ? null : Number(req.body.price_visit_mec);
+        }
+        if (req.body.price_visit_paint !== undefined) {
+          workshop.price_visit_paint = req.body.price_visit_paint === null || req.body.price_visit_paint === '' ? null : Number(req.body.price_visit_paint);
+        }
 
         await workshop.save();
 
@@ -740,7 +781,11 @@ router.put(
             adr: workshop.adr,
             phone: workshop.phone,
             status: workshop.status,
+            price_visit_mec: workshop.price_visit_mec,
+            price_visit_paint: workshop.price_visit_paint,
+            certifie: workshop.certifie,
             type: "workshop",
+            workshopType: workshop.type,
           },
         });
       }

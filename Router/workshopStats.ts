@@ -187,7 +187,7 @@ router.get(
         },
       })
         .populate('id_owner_car', 'firstName lastName email phone')
-        .populate('id_car', 'brand model year images')
+        .populate('id_car', 'brand model year images status_vin vin qr _id')
         .sort({ time: 1 }) // Sort by time ascending
         .lean();
 

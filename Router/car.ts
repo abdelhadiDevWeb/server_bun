@@ -6,6 +6,7 @@ import { authenticateToken, requireSeller } from "../middleware/auth.middleware"
 import { uploadMultiple } from "../middleware/upload.middleware";
 import { validate, validationSchemas } from "../middleware/validation.middleware";
 import Joi from "joi";
+import mongoose from "mongoose";
 import "dotenv/config";
 
 const router = Router();
@@ -66,6 +67,65 @@ const createCarSchema = Joi.object({
     .messages({
       "string.length": "Le VIN doit contenir exactement 17 caractères",
       "string.pattern.base": "Le VIN contient des caractères invalides",
+    }),
+  color: Joi.string()
+    .trim()
+    .max(50)
+    .optional()
+    .allow(null, '')
+    .messages({
+      "string.max": "La couleur ne peut pas dépasser 50 caractères",
+    }),
+  ports: Joi.number()
+    .integer()
+    .min(2)
+    .max(6)
+    .optional()
+    .allow(null, '')
+    .messages({
+      "number.min": "Le nombre de portes doit être au moins 2",
+      "number.max": "Le nombre de portes ne peut pas dépasser 6",
+    }),
+  boite: Joi.string()
+    .valid('manuelle', 'auto', 'semi-auto')
+    .optional()
+    .allow(null, '')
+    .messages({
+      "any.only": "La boîte doit être 'manuelle', 'auto' ou 'semi-auto'",
+    }),
+  type_gaz: Joi.string()
+    .valid('diesel', 'gaz', 'essence', 'electrique')
+    .optional()
+    .allow(null, '')
+    .messages({
+      "any.only": "Le type de carburant doit être 'diesel', 'gaz', 'essence' ou 'electrique'",
+    }),
+  type_enegine: Joi.string()
+    .trim()
+    .max(100)
+    .optional()
+    .allow(null, '')
+    .messages({
+      "string.max": "Le type de moteur ne peut pas dépasser 100 caractères",
+    }),
+  description: Joi.string()
+    .trim()
+    .max(2000)
+    .optional()
+    .allow(null, '')
+    .messages({
+      "string.max": "La description ne peut pas dépasser 2000 caractères",
+    }),
+  accident: Joi.boolean()
+    .optional()
+    .default(false),
+  usedby: Joi.string()
+    .trim()
+    .max(100)
+    .optional()
+    .allow(null, '')
+    .messages({
+      "string.max": "Le champ 'utilisé par' ne peut pas dépasser 100 caractères",
     }),
   // Status is not sent by user, it's set by admin/system
   // Default will be 'no_proccess' in the model
@@ -414,30 +474,40 @@ router.post(
       // Verify VIN if provided
       let vinData = null;
       let vinRemark = null;
+      let status_vin = false;
+      const bypassVin = req.body.bypassVin === 'true' || req.body.bypassVin === true;
+      
       if (value.vin) {
         const vinResult = await verifyVIN(value.vin.toUpperCase());
-        if (!vinResult.valid) {
-          // Clean up uploaded files
-          if (req.files && Array.isArray(req.files)) {
-            const fs = require("fs");
-            req.files.forEach((file: Express.Multer.File) => {
-              if (fs.existsSync(file.path)) {
-                try {
-                  fs.unlinkSync(file.path);
-                } catch (err) {
-                  console.error("Error deleting file:", err);
+        if (vinResult.valid) {
+          vinData = vinResult.data;
+          vinRemark = vinResult.remark;
+          status_vin = true;
+        } else {
+          // VIN is invalid
+          status_vin = false;
+          // Only reject if bypass is not requested
+          if (!bypassVin) {
+            // Clean up uploaded files
+            if (req.files && Array.isArray(req.files)) {
+              const fs = require("fs");
+              req.files.forEach((file: Express.Multer.File) => {
+                if (fs.existsSync(file.path)) {
+                  try {
+                    fs.unlinkSync(file.path);
+                  } catch (err) {
+                    console.error("Error deleting file:", err);
+                  }
                 }
-              }
+              });
+            }
+            
+            return res.status(400).json({
+              ok: false,
+              message: vinResult.error || "VIN invalide",
             });
           }
-          
-          return res.status(400).json({
-            ok: false,
-            message: vinResult.error || "VIN invalide",
-          });
         }
-        vinData = vinResult.data;
-        vinRemark = vinResult.remark;
       }
 
       // Get image paths
@@ -458,6 +528,9 @@ router.post(
         carData.vin = value.vin.toUpperCase();
         carData.vinData = vinData;
         carData.vinRemark = vinRemark; // Store the remark for display
+        carData.status_vin = status_vin; // Set VIN validation status
+      } else {
+        carData.status_vin = false; // No VIN provided, status is false
       }
 
       Car.create(carData)
@@ -516,6 +589,41 @@ router.get("/my-cars", authenticateToken, requireSeller, async (req: Request, re
       });
     }
 
+    const { excludeWorkshop } = req.query;
+
+    // If excludeWorkshop is provided, filter out cars that have appointments with this workshop
+    if (excludeWorkshop && mongoose.Types.ObjectId.isValid(excludeWorkshop as string)) {
+      const { RendezVousWorkshop } = await import("../Models/RendezVousWorkshop");
+      const workshopId = new mongoose.Types.ObjectId(excludeWorkshop as string);
+      
+      // Find all cars that have appointments with this workshop
+      const carsWithAppointments = await RendezVousWorkshop.find({
+        id_workshop: workshopId,
+        id_owner_car: userId,
+      })
+        .distinct('id_car')
+        .lean();
+
+      // Get all user's cars
+      const allCars = await Car.find({ owner: userId })
+        .sort({ createdAt: -1 })
+        .lean();
+
+      // Filter out cars that have appointments with this workshop
+      const filteredCars = allCars.filter(car => {
+        const carId = car._id?.toString();
+        return !carsWithAppointments.some((appointmentCarId: any) => 
+          appointmentCarId?.toString() === carId
+        );
+      });
+
+      return res.status(200).json({
+        ok: true,
+        cars: filteredCars,
+      });
+    }
+
+    // If no excludeWorkshop, return all cars
     const cars = await Car.find({ owner: userId })
       .sort({ createdAt: -1 })
       .lean();
@@ -534,13 +642,29 @@ router.get("/my-cars", authenticateToken, requireSeller, async (req: Request, re
 });
 
 // Get single car by ID (public endpoint) - must be after specific routes like /my-cars
-// Get all active cars (public endpoint) with optional search filters
+// Get all cars except those with status 'vendue' (public endpoint) with optional search filters
 router.get("/active", async (req: Request, res: Response) => {
   try {
-    const { brand, model, maxPrice, maxKm } = req.query;
+    const { 
+      brand, 
+      model, 
+      maxPrice, 
+      minPrice,
+      maxKm, 
+      minKm,
+      minYear,
+      maxYear,
+      color,
+      ports,
+      boite,
+      type_gaz,
+      type_enegine,
+      accident,
+      usedby
+    } = req.query;
 
-    // Build query
-    const query: any = { status: 'actif' };
+    // Build query - exclude cars with status 'vendue'
+    const query: any = { status: { $ne: 'vendue' } };
 
     if (brand && typeof brand === 'string') {
       query.brand = { $regex: brand, $options: 'i' };
@@ -550,22 +674,92 @@ router.get("/active", async (req: Request, res: Response) => {
       query.model = { $regex: model, $options: 'i' };
     }
 
+    // Price range
+    if (minPrice && typeof minPrice === 'string') {
+      const minPriceNum = parseInt(minPrice);
+      if (!isNaN(minPriceNum)) {
+        query.price = { ...(query.price || {}), $gte: minPriceNum };
+      }
+    }
     if (maxPrice && typeof maxPrice === 'string') {
       const maxPriceNum = parseInt(maxPrice);
       if (!isNaN(maxPriceNum)) {
-        query.price = { $lte: maxPriceNum };
+        query.price = { ...(query.price || {}), $lte: maxPriceNum };
       }
     }
 
+    // Km range
+    if (minKm && typeof minKm === 'string') {
+      const minKmNum = parseInt(minKm);
+      if (!isNaN(minKmNum)) {
+        query.km = { ...(query.km || {}), $gte: minKmNum };
+      }
+    }
     if (maxKm && typeof maxKm === 'string') {
       const maxKmNum = parseInt(maxKm);
       if (!isNaN(maxKmNum)) {
-        query.km = { $lte: maxKmNum };
+        query.km = { ...(query.km || {}), $lte: maxKmNum };
       }
     }
 
+    // Year range
+    if (minYear && typeof minYear === 'string') {
+      const minYearNum = parseInt(minYear);
+      if (!isNaN(minYearNum)) {
+        query.year = { ...(query.year || {}), $gte: minYearNum };
+      }
+    }
+    if (maxYear && typeof maxYear === 'string') {
+      const maxYearNum = parseInt(maxYear);
+      if (!isNaN(maxYearNum)) {
+        query.year = { ...(query.year || {}), $lte: maxYearNum };
+      }
+    }
+
+    // Color filter
+    if (color && typeof color === 'string') {
+      query.color = { $regex: color, $options: 'i' };
+    }
+
+    // Ports filter
+    if (ports && typeof ports === 'string') {
+      const portsNum = parseInt(ports);
+      if (!isNaN(portsNum)) {
+        query.ports = portsNum;
+      }
+    }
+
+    // Boite (transmission) filter
+    if (boite && typeof boite === 'string' && ['manuelle', 'auto', 'semi-auto'].includes(boite)) {
+      query.boite = boite;
+    }
+
+    // Type gaz (fuel type) filter
+    if (type_gaz && typeof type_gaz === 'string' && ['diesel', 'gaz', 'essence', 'electrique'].includes(type_gaz)) {
+      query.type_gaz = type_gaz;
+    }
+
+    // Type engine filter
+    if (type_enegine && typeof type_enegine === 'string') {
+      query.type_enegine = { $regex: type_enegine, $options: 'i' };
+    }
+
+    // Accident filter
+    if (accident !== undefined) {
+      if (accident === 'true' || accident === '1') {
+        query.accident = true;
+      } else if (accident === 'false' || accident === '0') {
+        query.accident = false;
+      }
+    }
+
+    // Usedby filter
+    if (usedby && typeof usedby === 'string') {
+      query.usedby = { $regex: usedby, $options: 'i' };
+    }
+
     const cars = await Car.find(query)
-      .populate('owner', 'firstName lastName email phone')
+      .populate('owner', 'firstName lastName email phone certifie')
       .sort({ createdAt: -1 })
       .limit(50)
       .lean();
@@ -586,11 +780,60 @@ router.get("/active", async (req: Request, res: Response) => {
   }
 });
 
+// Public endpoint to check car verification status (for QR code scanning)
+router.get("/verify/:id", async (req: Request, res: Response) => {
+  try {
+    const carId = req.params.id;
+    const car = await Car.findById(carId)
+      .populate('owner', 'firstName lastName email phone certifie')
+      .lean();
+
+    if (!car) {
+      return res.status(404).json({
+        ok: false,
+        verified: false,
+        message: "Voiture non trouvée",
+      });
+    }
+
+    // Check if car has been verified (status is 'actif' and has finished appointments)
+    const { RendezVousWorkshop } = await import("../Models/RendezVousWorkshop");
+    const finishedAppointments = await RendezVousWorkshop.find({
+      id_car: carId,
+      status: 'finish'
+    }).lean();
+
+    const isVerified = car.status === 'actif' && finishedAppointments.length > 0;
+
+    return res.status(200).json({
+      ok: true,
+      verified: isVerified,
+      car: {
+        _id: car._id,
+        id: car._id?.toString(),
+        brand: car.brand,
+        model: car.model,
+        year: car.year,
+        status: car.status,
+      },
+      message: isVerified ? "Véhicule vérifié" : "Véhicule non vérifié",
+    });
+  } catch (err: any) {
+    console.error("Error checking car verification:", err);
+    return res.status(500).json({
+      ok: false,
+      verified: false,
+      message: err?.message ?? "Erreur serveur",
+    });
+  }
+});
+
 router.get("/:id", async (req: Request, res: Response) => {
   try {
     const carId = req.params.id;
     const car = await Car.findById(carId)
-      .populate('owner', 'firstName lastName email phone')
+      .populate('owner', 'firstName lastName email phone certifie')
+      .select('+qr')
       .lean();
 
     if (!car) {
@@ -654,6 +897,65 @@ const updateCarSchema = Joi.object({
     .optional()
     .messages({
       "number.min": "Le prix ne peut pas être négatif",
+    }),
+  color: Joi.string()
+    .trim()
+    .max(50)
+    .optional()
+    .allow(null, '')
+    .messages({
+      "string.max": "La couleur ne peut pas dépasser 50 caractères",
+    }),
+  ports: Joi.number()
+    .integer()
+    .min(2)
+    .max(6)
+    .optional()
+    .allow(null, '')
+    .messages({
+      "number.min": "Le nombre de portes doit être au moins 2",
+      "number.max": "Le nombre de portes ne peut pas dépasser 6",
+    }),
+  boite: Joi.string()
+    .valid('manuelle', 'auto', 'semi-auto')
+    .optional()
+    .allow(null, '')
+    .messages({
+      "any.only": "La boîte doit être 'manuelle', 'auto' ou 'semi-auto'",
+    }),
+  type_gaz: Joi.string()
+    .valid('diesel', 'gaz', 'essence', 'electrique')
+    .optional()
+    .allow(null, '')
+    .messages({
+      "any.only": "Le type de carburant doit être 'diesel', 'gaz', 'essence' ou 'electrique'",
+    }),
+  type_enegine: Joi.string()
+    .trim()
+    .max(100)
+    .optional()
+    .allow(null, '')
+    .messages({
+      "string.max": "Le type de moteur ne peut pas dépasser 100 caractères",
+    }),
+  description: Joi.string()
+    .trim()
+    .max(2000)
+    .optional()
+    .allow(null, '')
+    .messages({
+      "string.max": "La description ne peut pas dépasser 2000 caractères",
+    }),
+  accident: Joi.boolean()
+    .optional()
+    .default(false),
+  usedby: Joi.string()
+    .trim()
+    .max(100)
+    .optional()
+    .allow(null, '')
+    .messages({
+      "string.max": "Le champ 'utilisé par' ne peut pas dépasser 100 caractères",
     }),
   // Status is not allowed to be updated by user
 });

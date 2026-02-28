@@ -29,6 +29,63 @@ const CarSchema = new Schema(
       trim: true,
       default: null
     }, // VIN remark (e.g., "2020 Toyota Camry")
+    status_vin: {
+      type: Boolean,
+      default: false
+    }, // VIN validation status: true if VIN is valid, false otherwise
+    color: {
+      type: String,
+      trim: true,
+      default: null
+    }, // Car color
+    ports: {
+      type: Number,
+      min: 2,
+      max: 6,
+      default: null
+    }, // Number of doors (ports)
+    boite: {
+      type: String,
+      enum: ['manuelle', 'auto', 'semi-auto'],
+      default: null
+    }, // Transmission type (gearbox)
+    type_gaz: {
+      type: String,
+      enum: ['diesel', 'gaz', 'essence', 'electrique'],
+      default: null
+    }, // Fuel type
+    type_enegine: {
+      type: String,
+      trim: true,
+      default: null
+    }, // Engine type
+    description: {
+      type: String,
+      trim: true,
+      default: null
+    }, // Car description
+    accident: {
+      type: Boolean,
+      default: false
+    }, // Has the car been in an accident
+    usedby: {
+      type: String,
+      trim: true,
+      default: null
+    }, // Used by (e.g., "Particulier", "Professionnel")
+    qr: {
+      type: String,
+      trim: true,
+      default: null
+    }, // QR code URL for verification status
+    warningSentAt: {
+      type: Date,
+      default: null
+    }, // Date when warning was sent
+    warningExpiresAt: {
+      type: Date,
+      default: null
+    }, // Date when warning expires (24h after warning sent)
   },
   { timestamps: true }
 );

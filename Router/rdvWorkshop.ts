@@ -1,4 +1,4 @@
-import { Router } from "express";
+﻿import { Router } from "express";
 import type { Request, Response } from "express";
 import { RendezVousWorkshop } from "../Models/RendezVousWorkshop";
 import { Notification } from "../Models/Notification";
@@ -9,8 +9,17 @@ import mongoose from "mongoose";
 import { uploadRdvImagesMultiple, uploadRdvPdfSingle } from "../middleware/upload.middleware";
 import fs from "fs";
 import path from "path";
+import QRCode from "qrcode";
 
 const router = Router();
+
+// Utility function to normalize time to 30-minute intervals (round down to nearest 30 minutes)
+const normalizeTime = (timeStr: string): string => {
+  const [hours, minutes] = timeStr.split(':').map(Number);
+  // Round down to nearest 30 minutes
+  const normalizedMinutes = minutes < 30 ? 0 : 30;
+  return `${hours.toString().padStart(2, '0')}:${normalizedMinutes.toString().padStart(2, '0')}`;
+};
 
 // Validation schema for appointment creation
 const createRdvSchema = Joi.object({
@@ -25,11 +34,11 @@ const createRdvSchema = Joi.object({
     "date.base": "Format de date invalide",
   }),
   time: Joi.string()
-    .pattern(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/)
+    .pattern(/^([0-1]?[0-9]|2[0-3]):(00|30)$/)
     .required()
     .messages({
       "any.required": "L'heure est requise",
-      "string.pattern.base": "Format d'heure invalide (HH:MM)",
+      "string.pattern.base": "Format d'heure invalide. Les heures doivent être en intervalles de 30 minutes (ex: 8:00, 8:30, 9:00)",
     }),
 });
 
@@ -64,20 +73,21 @@ router.get(
         status: { $in: ['en_attente', 'accepted'] }, // Only check pending and accepted
       }).lean();
 
+      // Normalize times to 30-minute intervals
       const unavailableTimes = existingAppointments
-        .map(apt => apt.time)
+        .map(apt => normalizeTime(apt.time))
         .filter((t, index, self) => self.indexOf(t) === index) // Remove duplicates
         .sort();
 
-      // Generate all possible time slots (8:00 to 23:45 in 15-minute intervals)
+      // Generate all possible time slots (8:00 to 23:30 in 30-minute intervals)
       const allTimeSlots: string[] = [];
       for (let hour = 8; hour < 24; hour++) {
-        for (let minute = 0; minute < 60; minute += 15) {
+        for (let minute = 0; minute < 60; minute += 30) {
           const timeString = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
           allTimeSlots.push(timeString);
         }
       }
-      // Note: This generates slots from 8:00 to 23:45 (64 slots total)
+      // Note: This generates slots from 8:00 to 23:30 (32 slots total)
 
       const availableTimes = allTimeSlots.filter(time => !unavailableTimes.includes(time));
 
@@ -162,13 +172,16 @@ router.post(
         status: { $in: ['en_attente', 'accepted'] }, // Only check pending and accepted appointments
       }).lean();
 
-      // Check if the requested time is already taken
-      const isTimeTaken = existingAppointments.some(apt => apt.time === time);
+      // Normalize the requested time
+      const normalizedTime = normalizeTime(time);
+
+      // Check if the requested time is already taken (compare normalized times)
+      const isTimeTaken = existingAppointments.some(apt => normalizeTime(apt.time) === normalizedTime);
       
       if (isTimeTaken) {
-        // Get all unavailable times for this date
+        // Get all unavailable times for this date (normalized)
         const unavailableTimes = existingAppointments
-          .map(apt => apt.time)
+          .map(apt => normalizeTime(apt.time))
           .filter((t, index, self) => self.indexOf(t) === index) // Remove duplicates
           .sort();
 
@@ -179,13 +192,13 @@ router.post(
         });
       }
 
-      // Create appointment
+      // Create appointment with normalized time
       const appointment = new RendezVousWorkshop({
         id_workshop,
         id_owner_car: userId,
         id_car,
         date: new Date(date),
-        time,
+        time: normalizedTime, // Use normalized time (30-minute interval)
         status: 'en_attente',
       });
 
@@ -298,7 +311,7 @@ router.get(
         id_car: carIdObjectId,
         status: 'finish' // Only return finished appointments
       })
-        .populate('id_workshop', 'name email phone adr')
+        .populate('id_workshop', 'name email phone adr certifie')
         .populate('id_car', 'brand model year')
         .sort({ date: -1, time: -1 })
         .lean();
@@ -337,8 +350,8 @@ router.get(
       }
 
       const appointments = await RendezVousWorkshop.find({ id_workshop: userId })
-        .populate('id_owner_car', 'firstName lastName email phone')
-        .populate('id_car', 'brand model year images')
+        .populate('id_owner_car', 'firstName lastName email phone certifie')
+        .populate('id_car', 'brand model year images qr _id')
         .sort({ date: -1, time: -1 })
         .lean();
 
@@ -406,18 +419,32 @@ router.put(
       appointment.status = status;
       await appointment.save();
 
-      // If status changed to 'finish', update car status to 'actif'
+      // If status changed to 'finish', update car status to 'actif' and generate QR code
       if (status === 'finish' && oldStatus !== 'finish') {
-        const { Car } = await import("../Models/Car");
         const car = await Car.findById(appointment.id_car);
         if (car) {
           car.status = 'actif';
+          
+          // Generate QR code URL
+          const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+          const qrUrl = `${baseUrl}/verify-car/${car._id.toString()}`;
+          
+          // Generate QR code as data URL
+          try {
+            const qrCodeDataUrl = await QRCode.toDataURL(qrUrl);
+            
+            // Save QR code data URL to car
+            car.qr = qrCodeDataUrl;
+          } catch (qrError) {
+            console.error("Error generating QR code:", qrError);
+            // Continue even if QR code generation fails
+          }
+          
           await car.save();
         }
       }
 
       // Create notification for user based on status
-      const { Notification } = await import("../Models/Notification");
       let notificationMessage = '';
       let notificationType = 'rdv_workshop';
 
@@ -782,6 +809,109 @@ router.delete(
       });
     } catch (err: any) {
       console.error("Delete image error:", err);
+      return res.status(500).json({
+        ok: false,
+        message: err?.message ?? "Erreur serveur",
+      });
+    }
+  }
+);
+
+// Check and delete expired appointments for a seller
+router.post(
+  "/check-expired-seller",
+  authenticateToken,
+  async (req: Request, res: Response) => {
+    try {
+      const userId = req.user?.id;
+      const userType = req.user?.type;
+
+      if (!userId || userType !== 'user') {
+        return res.status(401).json({
+          ok: false,
+          message: "Utilisateur non authentifié ou non autorisé",
+        });
+      }
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      // Find expired appointments for this user
+      const expiredAppointments = await RendezVousWorkshop.find({
+        id_owner_car: userId,
+        status: { $in: ['en_attente', 'accepted'] },
+        date: { $lt: today },
+      })
+        .populate('id_workshop', 'name _id')
+        .populate('id_car', 'brand model year')
+        .lean();
+
+      if (expiredAppointments.length === 0) {
+        return res.status(200).json({
+          ok: true,
+          deletedCount: 0,
+          deletedAppointments: [],
+          message: "Aucun rendez-vous expiré trouvé",
+        });
+      }
+
+      const deletedAppointments: any[] = [];
+      const io = (global as any).io;
+
+      // Delete each expired appointment and create notification for workshop
+      for (const appointment of expiredAppointments) {
+        const workshopId = (appointment.id_workshop as any)?._id;
+        const workshopName = (appointment.id_workshop as any)?.name || 'Atelier';
+        const carInfo = appointment.id_car as any;
+        const carName = carInfo ? `${carInfo.brand} ${carInfo.model} ${carInfo.year}` : 'véhicule';
+
+        // Create notification for workshop
+        if (workshopId) {
+          const notification = new Notification({
+            id_sender: userId,
+            id_receiver: workshopId,
+            message: `Le rendez-vous pour ${carName} prévu le ${new Date(appointment.date).toLocaleDateString('fr-FR')} à ${appointment.time} a été automatiquement annulé car la date est passée.`,
+            type: 'cancel_rdv_workshop',
+            is_read: false,
+          });
+          await notification.save();
+
+          // Send notification via Socket.IO
+          if (io) {
+            io.to(`workshop_${workshopId.toString()}`).emit('new_notification', {
+              id: notification._id.toString(),
+              id_sender: userId,
+              message: notification.message,
+              type: notification.type,
+              is_read: false,
+              createdAt: notification.createdAt,
+            });
+            console.log(`📢 Socket notification sent to workshop_${workshopId.toString()}`);
+          }
+        }
+
+        // Delete the appointment
+        await RendezVousWorkshop.deleteOne({ _id: appointment._id });
+
+        deletedAppointments.push({
+          id: appointment._id?.toString(),
+          date: appointment.date,
+          time: appointment.time,
+          workshopName,
+          carName,
+        });
+      }
+
+      console.log(`✅ Deleted ${deletedAppointments.length} expired appointment(s) for user ${userId}`);
+
+      return res.status(200).json({
+        ok: true,
+        deletedCount: deletedAppointments.length,
+        deletedAppointments,
+        message: `${deletedAppointments.length} rendez-vous expiré(s) supprimé(s)`,
+      });
+    } catch (err: any) {
+      console.error("Check expired appointments error:", err);
       return res.status(500).json({
         ok: false,
         message: err?.message ?? "Erreur serveur",

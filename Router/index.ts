@@ -3,6 +3,7 @@ import type { Request, Response } from "express";
 import authRouter from "./auth";
 import carRouter from "./car";
 import userImageRouter from "./userImage";
+import userRouter from "./user";
 import statsRouter from "./stats";
 import workshopRouter from "./workshop";
 import rdvWorkshopRouter from "./rdvWorkshop";
@@ -12,6 +13,8 @@ import workshopStatsRouter from "./workshopStats";
 import adminRouter from "./admin";
 import abonnementRouter from "./abonnement";
 import chatRouter from "./chat";
+import factureRouter from "./facture";
+import rateRouter from "./rate";
 
 const router = Router();
 
@@ -23,6 +26,7 @@ router.get("/health", (req: Request, res: Response) => {
 router.use("/auth", authRouter);
 router.use("/car", carRouter);
 router.use("/user-image", userImageRouter);
+router.use("/user", userRouter);
 router.use("/stats", statsRouter);
 router.use("/workshop", workshopRouter);
 router.use("/rdv-workshop", rdvWorkshopRouter);
@@ -32,6 +36,8 @@ router.use("/workshop-stats", workshopStatsRouter);
 router.use("/admin", adminRouter);
 router.use("/abonnement", abonnementRouter);
 router.use("/chat", chatRouter);
+router.use("/facture", factureRouter);
+router.use("/rate", rateRouter);
 
 export default router;
 

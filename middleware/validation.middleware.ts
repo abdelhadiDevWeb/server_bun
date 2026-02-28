@@ -130,10 +130,10 @@ export const validationSchemas = {
         "any.required": "Le téléphone est requis",
       }),
     type: Joi.string()
-      .valid('car_cover', 'mechanic')
+      .valid('paint_vehicle', 'mechanic', 'mechanic_paint_inspector')
       .required()
       .messages({
-        "any.only": "Le type d'atelier doit être 'car_cover' ou 'mechanic'",
+        "any.only": "Le type d'atelier doit être 'paint_vehicle', 'mechanic' ou 'mechanic_paint_inspector'",
         "any.required": "Le type d'atelier est requis",
       }),
     password: Joi.string()

@@ -9,11 +9,14 @@ const WorkshopSchema = new Schema(
     password: { type: String, required: true },
     type: {
       type: String,
-      enum: ['car_cover', 'mechanic'],
+      enum: ['paint_vehicle', 'mechanic', 'mechanic_paint_inspector'],
       required: true,
     },
     status: { type: Boolean, default: false },
     verfie: { type: Boolean, default: false },
+    certifie: { type: Boolean, default: false },
+    price_visit_mec: { type: Number, default: null },
+    price_visit_paint: { type: Number, default: null },
   },
   { timestamps: true }
 );
