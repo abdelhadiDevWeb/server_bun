@@ -139,20 +139,11 @@ router.get("/my-chats", authenticateToken, async (req: Request, res: Response) =
           return null;
         }
 
-        // Get unread count - messages where current user is receiver
+        // Get unread count - messages where current user is receiver and read: false
         const unreadMessageCount = await MessageModel.countDocuments({
           id_Chat: chat._id,
           id_reciver: currentUserId,
           read: false
-        });
-
-        // Get unread notification count for this chat (only notifications with is_read: false)
-        const otherUserIdString = otherUser._id ? otherUser._id.toString() : otherUser.toString();
-        const unreadNotificationCount = await Notification.countDocuments({
-          id_receiver: currentUserId,
-          id_sender: otherUserIdString,
-          type: 'message',
-          is_read: false
         });
 
         return {
@@ -174,7 +165,7 @@ router.get("/my-chats", authenticateToken, async (req: Request, res: Response) =
             },
             createdAt: lastMessage.createdAt
           } : null,
-          unreadCount: unreadNotificationCount, // Use notification count instead of message count
+          unreadCount: unreadMessageCount, // Use actual unread message count (read: false)
           updatedAt: chat.updatedAt
         };
       })
@@ -245,11 +236,11 @@ router.post("/send-message", authenticateToken, async (req: Request, res: Respon
     await newMessage.populate('id_sender', 'firstName lastName email profileImage');
     await newMessage.populate('id_reciver', 'firstName lastName email profileImage');
 
-    // Create notification
+    // Create notification with actual message content
     const notification = await Notification.create({
       id_sender: userId,
       id_receiver: id_reciver,
-      message: `Nouveau message de ${(newMessage.id_sender as any).firstName} ${(newMessage.id_sender as any).lastName}`,
+      message: newMessage.message, // Store the actual message content
       type: 'message'
     });
 

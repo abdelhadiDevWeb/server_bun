@@ -1,8 +1,9 @@
-﻿import { Router } from "express";
+import { Router } from "express";
 import type { Request, Response } from "express";
 import { Notification } from "../Models/Notification";
 import { User } from "../Models/User";
 import { Workshop } from "../Models/Workshop";
+import { MessageModel } from "../Models/Message";
 import { authenticateToken } from "../middleware/auth.middleware";
 import mongoose from "mongoose";
 
@@ -60,6 +61,26 @@ router.put("/:id/read", authenticateToken, async (req: Request, res: Response) =
     }
     notification.is_read = true;
     await notification.save();
+
+    // If this is a message notification, also mark related messages as read
+    if (notification.type === 'message') {
+      const senderIdObjectId = mongoose.Types.ObjectId.isValid(notification.id_sender) 
+        ? new mongoose.Types.ObjectId(notification.id_sender) 
+        : notification.id_sender;
+      
+      // Mark all unread messages from this sender to this receiver as read
+      await MessageModel.updateMany(
+        {
+          id_sender: senderIdObjectId,
+          id_reciver: userIdObjectId,
+          read: false
+        },
+        {
+          read: true
+        }
+      );
+    }
+
     return res.status(200).json({ ok: true, message: "Notification marquÃ©e comme lue", notification: notification.toJSON() });
   } catch (err: any) {
     console.error("Mark notification as read error:", err);
@@ -74,7 +95,21 @@ router.put("/read-all", authenticateToken, async (req: Request, res: Response) =
       return res.status(401).json({ ok: false, message: "Utilisateur non authentifiÃ©" });
     }
     const userIdObjectId = mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : userId;
+    
+    // Mark all notifications as read
     await Notification.updateMany({ id_receiver: userIdObjectId, is_read: false }, { is_read: true });
+    
+    // Also mark all unread messages to this user as read
+    await MessageModel.updateMany(
+      {
+        id_reciver: userIdObjectId,
+        read: false
+      },
+      {
+        read: true
+      }
+    );
+    
     return res.status(200).json({ ok: true, message: "Toutes les notifications ont Ã©tÃ© marquÃ©es comme lues" });
   } catch (err: any) {
     console.error("Mark all notifications as read error:", err);

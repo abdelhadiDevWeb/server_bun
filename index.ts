@@ -28,7 +28,7 @@ const server = http.createServer(app);
 // Initialize Socket.IO
 const io = new SocketIOServer(server, {
   cors: {
-    origin: ["http://localhost:3000", "http://localhost:5173"],
+    origin: process.env.NODE_ENV !== 'production' ? true : ["http://localhost:3000", "http://localhost:5173"],
     credentials: true,
     methods: ["GET", "POST"]
   }
@@ -83,11 +83,40 @@ io.on('connection', (socket) => {
 });
 
 
+// CORS configuration - Allow all origins in development for mobile apps
+// In production, restrict to specific domains
 const corsOptions = {
-  origin: ["http://localhost:3000", "http://localhost:5173"],
+  origin: function (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
+    // Allow requests with no origin (like mobile apps, Postman, curl)
+    if (!origin) {
+      return callback(null, true);
+    }
+    
+    // Allow localhost origins (web development)
+    const allowedOrigins = [
+      "http://localhost:3000",
+      "http://localhost:5173",
+      "http://127.0.0.1:3000",
+      "http://127.0.0.1:5173",
+    ];
+    
+    // Allow any origin in development (for mobile apps)
+    // Mobile apps don't have a traditional origin, so we allow all in dev
+    if (process.env.NODE_ENV !== 'production') {
+      return callback(null, true);
+    }
+    
+    // In production, only allow specific origins
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
 };
-
 
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
@@ -189,8 +218,12 @@ ValidatAppConfig(async () => {
     await connectDatabase();
 
     // Run Server
-    server.listen(AppConfig.PORT, () => {
-      console.log("server is runing on port ", AppConfig.PORT);
+    // Listen on all network interfaces (0.0.0.0) to allow connections from mobile devices
+    // Use 'localhost' or '127.0.0.1' if you only want local connections
+    server.listen(AppConfig.PORT, '0.0.0.0', () => {
+      console.log(`Server is running on port ${AppConfig.PORT}`);
+      console.log(`Accessible at: http://localhost:${AppConfig.PORT}`);
+      console.log(`For mobile devices, use your local IP address: http://YOUR_LOCAL_IP:${AppConfig.PORT}`);
     });
   } catch (err: unknown) {
     console.log('Error:', err);

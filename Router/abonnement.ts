@@ -4,7 +4,7 @@ import { TypeAbonnement } from "../Models/TypeAbonnement";
 import { ClientAbonnement } from "../Models/ClientAbonnement";
 import { User } from "../Models/User";
 import { Workshop } from "../Models/Workshop";
-import { authenticateToken, requireAdmin } from "../middleware/auth.middleware";
+import { authenticateToken, requireAdmin, requireSeller } from "../middleware/auth.middleware";
 
 const router = Router();
 
@@ -294,6 +294,58 @@ router.get("/client", authenticateToken, requireAdmin, async (req: Request, res:
     return res.status(500).json({
       ok: false,
       message: "Erreur lors de la récupération des abonnements",
+      error: error.message,
+    });
+  }
+});
+
+// Get current user's active subscription
+router.get("/my-subscription", authenticateToken, requireSeller, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: "Non authentifié",
+      });
+    }
+
+    // Find active subscription for current user
+    const now = new Date();
+    const activeSubscription = await ClientAbonnement.findOne({
+      client: userId,
+      clientType: 'User',
+      date_end: { $gte: now },
+    })
+      .populate('type_abonnement')
+      .sort({ date_end: -1 })
+      .lean();
+
+    if (!activeSubscription) {
+      return res.status(200).json({
+        ok: true,
+        hasSubscription: false,
+        subscription: null,
+      });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      hasSubscription: true,
+      subscription: {
+        ...activeSubscription,
+        id: activeSubscription._id?.toString() || activeSubscription.id,
+        type_abonnement: activeSubscription.type_abonnement ? {
+          ...activeSubscription.type_abonnement,
+          id: activeSubscription.type_abonnement._id?.toString() || activeSubscription.type_abonnement.id,
+        } : null,
+      },
+    });
+  } catch (error: any) {
+    console.error("Error fetching user subscription:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la récupération de l'abonnement",
       error: error.message,
     });
   }
