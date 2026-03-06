@@ -5,6 +5,7 @@ import { MessageModel } from "../Models/Message";
 import { Notification } from "../Models/Notification";
 import { User } from "../Models/User";
 import { authenticateToken } from "../middleware/auth.middleware";
+import { sendPushNotification } from "../services/pushNotificationService";
 import mongoose from "mongoose";
 
 const router = Router();
@@ -243,6 +244,22 @@ router.post("/send-message", authenticateToken, async (req: Request, res: Respon
       message: newMessage.message, // Store the actual message content
       type: 'message'
     });
+
+    // Get sender name for push notification
+    const senderName = `${(newMessage.id_sender as any).firstName || ''} ${(newMessage.id_sender as any).lastName || ''}`.trim() || 'Quelqu\'un';
+
+    // Send push notification (works even when app is closed)
+    await sendPushNotification(
+      id_reciver,
+      senderName,
+      newMessage.message,
+      {
+        notificationId: notification.id,
+        type: 'message',
+        senderId: userId,
+        chatId: id_Chat,
+      }
+    );
 
     // Send message via socket to receiver
     const io = (global as any).io;

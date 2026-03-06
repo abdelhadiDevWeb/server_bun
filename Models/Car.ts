@@ -97,7 +97,7 @@ CarSchema.virtual("id").get(function (this: any) {
 CarSchema.set("toJSON", {
   virtuals: true,
   versionKey: false,
-  transform: (_doc, ret) => {
+  transform: (_doc, ret: any) => {
     delete ret._id;
     return ret;
   },

@@ -4,6 +4,8 @@ import { RendezVousWorkshop } from "../Models/RendezVousWorkshop";
 import { Notification } from "../Models/Notification";
 import { authenticateToken } from "../middleware/auth.middleware";
 import { Car } from "../Models/Car";
+import { User } from "../Models/User";
+import { sendPushNotification } from "../services/pushNotificationService";
 import Joi from "joi";
 import mongoose from "mongoose";
 import { uploadRdvImagesMultiple, uploadRdvPdfSingle } from "../middleware/upload.middleware";
@@ -214,6 +216,23 @@ router.post(
       });
 
       await notification.save();
+
+      // Get user name for push notification
+      const user = await User.findById(userId).select('firstName lastName').lean();
+      const userName = user ? `${user.firstName} ${user.lastName}`.trim() : 'Un utilisateur';
+
+      // Send push notification to workshop (works even when app is closed)
+      await sendPushNotification(
+        id_workshop,
+        'Nouveau rendez-vous',
+        notification.message,
+        {
+          notificationId: notification.id,
+          type: 'rdv_workshop',
+          appointmentId: appointment.id,
+          senderId: userId,
+        }
+      );
 
       // Emit socket event to workshop
       const io = (global as any).io;
@@ -471,6 +490,19 @@ router.put(
           is_read: false,
         });
         await notification.save();
+
+        // Send push notification to user (works even when app is closed)
+        await sendPushNotification(
+          appointment.id_owner_car,
+          'Mise à jour du rendez-vous',
+          notificationMessage,
+          {
+            notificationId: notification.id,
+            type: notificationType,
+            appointmentId: appointment.id,
+            senderId: userId,
+          }
+        );
 
         // Emit socket event to user
         const io = (global as any).io;
@@ -875,6 +907,18 @@ router.post(
             is_read: false,
           });
           await notification.save();
+
+          // Send push notification to workshop (works even when app is closed)
+          await sendPushNotification(
+            workshopId,
+            'Rendez-vous annulé',
+            notification.message,
+            {
+              notificationId: notification._id.toString(),
+              type: 'cancel_rdv_workshop',
+              senderId: userId,
+            }
+          );
 
           // Send notification via Socket.IO
           if (io) {

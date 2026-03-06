@@ -7,6 +7,7 @@ import { ClientAbonnement } from "../Models/ClientAbonnement";
 import { RendezVousWorkshop } from "../Models/RendezVousWorkshop";
 import { Notification } from "../Models/Notification";
 import { authenticateToken, requireAdmin } from "../middleware/auth.middleware";
+import { sendPushNotification } from "../services/pushNotificationService";
 import bcrypt from "bcrypt";
 import Joi from "joi";
 import { uploadUserImageSingle } from "../middleware/upload.middleware";
@@ -1440,6 +1441,19 @@ router.post("/cars/:id/warning", authenticateToken, requireAdmin, async (req: Re
       is_read: false,
     });
     await notification.save();
+
+    // Send push notification to user (works even when app is closed)
+    await sendPushNotification(
+      ownerId,
+      'Avertissement de prix',
+      notificationMessage,
+      {
+        notificationId: notification._id.toString(),
+        type: 'car_price_warning',
+        carId: carId,
+        senderId: adminId,
+      }
+    );
 
     // Send notification via Socket.IO
     const io = (global as any).io;

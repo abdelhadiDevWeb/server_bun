@@ -12,6 +12,11 @@ const UserSchema = new Schema(
     verfie: { type: Boolean, default: false },
     certifie: { type: Boolean, default: false },
     profileImage: { type: String, default: null },
+    // Push notification tokens
+    pushToken: { type: String, default: null, sparse: true },
+    platform: { type: String, enum: ['ios', 'android'], default: null },
+    deviceId: { type: String, default: null },
+    pushTokenUpdatedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

@@ -17,6 +17,11 @@ const WorkshopSchema = new Schema(
     certifie: { type: Boolean, default: false },
     price_visit_mec: { type: Number, default: null },
     price_visit_paint: { type: Number, default: null },
+    // Push notification tokens
+    pushToken: { type: String, default: null, sparse: true },
+    platform: { type: String, enum: ['ios', 'android'], default: null },
+    deviceId: { type: String, default: null },
+    pushTokenUpdatedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );
