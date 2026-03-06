@@ -1,15 +1,16 @@
 import mongoose from "mongoose";
 import "dotenv/config";
 
-const MONGODB_URI = process.env.MONGODB_URI || 
-  `mongodb://${process.env.DB_HOST || "localhost"}:${process.env.DB_PORT || "27017"}/cars`;
+const MONGODB_URI = process.env.MONGODB_URI ;
 
 export const connectDatabase = async (): Promise<void> => {
   try {
-    await mongoose.connect(MONGODB_URI, {
+    if(MONGODB_URI) {
+       await mongoose.connect(MONGODB_URI, {
       // MongoDB connection options
     });
-    console.log('MongoDB Database Cars application Is Connected');
+    console.log('MongoDB Database Cars application Is Connected' , MONGODB_URI);
+    }
   } catch (error) {
     console.error('MongoDB connection error:', error);
     throw error;
