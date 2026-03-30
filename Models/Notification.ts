@@ -12,6 +12,11 @@ const NotificationSchema = new Schema(
       required: true,
       ref: 'User' // Default to User, but can reference Workshop too
     },
+    id_car: {
+      type: Schema.Types.ObjectId,
+      ref: 'Car',
+      required: false,
+    },
     is_read: { 
       type: Boolean, 
       default: false 
@@ -22,7 +27,7 @@ const NotificationSchema = new Schema(
     },
     type: { 
       type: String, 
-      enum: ['rdv_workshop', 'message', 'done_rdv_workshop', 'cancel_rdv_workshop', 'car_price_warning', 'other'],
+      enum: ['rdv_workshop', 'message', 'done_rdv_workshop', 'cancel_rdv_workshop', 'car_price_warning', 'new_register', 'other'],
       required: true 
     },
   },

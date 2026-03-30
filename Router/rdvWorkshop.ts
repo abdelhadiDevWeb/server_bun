@@ -206,20 +206,18 @@ router.post(
 
       await appointment.save();
 
-      // Create notification
-      const notification = new Notification({
+      // After RDV is saved successfully, create and send notification to workshop.
+      let notification: any = null;
+      try {
+        notification = new Notification({
         id_sender: userId,
         id_receiver: id_workshop,
+          id_car,
         message: `Nouveau rendez-vous demandé pour le ${new Date(date).toLocaleDateString('fr-FR')} à ${time}`,
         type: 'rdv_workshop',
         is_read: false,
       });
-
       await notification.save();
-
-      // Get user name for push notification
-      const user = await User.findById(userId).select('firstName lastName').lean();
-      const userName = user ? `${user.firstName} ${user.lastName}`.trim() : 'Un utilisateur';
 
       // Send push notification to workshop (works even when app is closed)
       await sendPushNotification(
@@ -237,19 +235,26 @@ router.post(
       // Emit socket event to workshop
       const io = (global as any).io;
       if (io) {
+          const workshopRoomId = id_workshop.toString();
         const appointmentData = {
           appointment: appointment.toJSON(),
           notification: notification.toJSON(),
         };
-        io.to(`workshop_${id_workshop}`).emit('new_appointment', appointmentData);
-        console.log(`📢 Socket notification sent to workshop_${id_workshop}`);
+          // Primary event used by workshop appointments pages
+          io.to(`workshop_${workshopRoomId}`).emit('new_appointment', appointmentData);
+          // Secondary event used by workshop layout/header notification listeners
+          io.to(`workshop_${workshopRoomId}`).emit('new_notification', notification.toJSON());
+          console.log(`📢 Socket notification sent to workshop_${workshopRoomId}`);
+        }
+      } catch (notifyErr: any) {
+        console.error("Create appointment notification error:", notifyErr);
       }
 
       return res.status(201).json({
         ok: true,
         message: "Rendez-vous créé avec succès",
         appointment: appointment.toJSON(),
-        notification: notification.toJSON(),
+        notification: notification ? notification.toJSON() : null,
       });
     } catch (err: any) {
       console.error("Create appointment error:", err);
@@ -437,6 +442,34 @@ router.put(
       const oldStatus = appointment.status;
       appointment.status = status;
       await appointment.save();
+
+      // When workshop accepts an RDV, mark matching workshop RDV notifications as read by car id.
+      if (status === 'accepted' && oldStatus !== 'accepted') {
+        const carIdForQuery = mongoose.Types.ObjectId.isValid(appointment.id_car as any)
+          ? new mongoose.Types.ObjectId(appointment.id_car as any)
+          : appointment.id_car;
+
+        const markResult = await Notification.updateMany(
+          {
+            id_receiver: appointment.id_workshop,
+            id_car: carIdForQuery,
+            type: 'rdv_workshop',
+            is_read: false,
+          },
+          { is_read: true }
+        );
+
+        // Notify workshop clients to refresh notification state instantly.
+        const io = (global as any).io;
+        if (io) {
+          io.to(`workshop_${appointment.id_workshop.toString()}`).emit('workshop_notifications_updated', {
+            type: 'rdv_workshop',
+            id_car: appointment.id_car?.toString?.() || appointment.id_car,
+            action: 'mark_read_by_car',
+            updatedCount: markResult.modifiedCount || 0,
+          });
+        }
+      }
 
       // If status changed to 'finish', update car status to 'actif' and generate QR code
       if (status === 'finish' && oldStatus !== 'finish') {

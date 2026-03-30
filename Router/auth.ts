@@ -24,7 +24,8 @@ const generateCode = (): string => {
 };
 
 // Helper function to notify all admins
-const notifyAllAdmins = async (senderId: string, message: string, type: string = 'other') => {
+// Creates a Notification record per admin and emits Socket.IO to each admin room.
+const notifyAllAdmins = async (senderId: string, message: string, type: string = 'new_register') => {
   try {
     // Get all admins
     const admins = await User.find({ role: 'admin', status: true }).select('_id').lean();
@@ -63,6 +64,16 @@ const notifyAllAdmins = async (senderId: string, message: string, type: string =
         return notification;
       })
     );
+
+    // Also broadcast a lightweight event to all connected admins.
+    // Each admin dashboard can refetch unread notifications (including those created for other admins).
+    if (io) {
+      io.to('admins').emit('admin_notifications_updated', {
+        type,
+        message,
+        createdAt: new Date().toISOString(),
+      });
+    }
 
     console.log(`✅ Notified ${notifications.length} admins about: ${message}`);
   } catch (error: any) {
@@ -163,8 +174,7 @@ router.post("/register/user", authRateLimiter, validate(validationSchemas.regist
     // Notify all admins about new user registration
     await notifyAllAdmins(
       user._id.toString(),
-      `Un nouveau client s'est inscrit: ${firstName} ${lastName} (${email})`,
-      'other'
+      `Un nouveau client s'est inscrit: ${firstName} ${lastName} (${email})`
     );
 
     return res.status(201).json({
@@ -281,8 +291,7 @@ router.post("/register/workshop", authRateLimiter, validate(validationSchemas.re
     // Notify all admins about new workshop registration
     await notifyAllAdmins(
       workshop._id.toString(),
-      `Un nouvel atelier s'est inscrit: ${name} (${email})`,
-      'other'
+      `Un nouvel atelier s'est inscrit: ${name} (${email})`
     );
 
     return res.status(201).json({

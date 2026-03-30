@@ -8,6 +8,91 @@ import { authenticateToken, requireAdmin, requireSeller } from "../middleware/au
 
 const router = Router();
 
+// Admin: sync expired abonnements and update user/workshop status
+router.post("/client/sync-expired", authenticateToken, requireAdmin, async (_req: Request, res: Response) => {
+  try {
+    const now = new Date();
+
+    // Get latest abonnement per client for Users
+    const latestUserAbonnements = await ClientAbonnement.aggregate([
+      { $match: { clientType: "User" } },
+      { $sort: { createdAt: -1 } },
+      {
+        $group: {
+          _id: "$client",
+          lastAbonnementId: { $first: "$_id" },
+          date_end: { $first: "$date_end" },
+        },
+      },
+    ]);
+
+    // Get latest abonnement per client for Workshops
+    const latestWorkshopAbonnements = await ClientAbonnement.aggregate([
+      { $match: { clientType: "Workshop" } },
+      { $sort: { createdAt: -1 } },
+      {
+        $group: {
+          _id: "$client",
+          lastAbonnementId: { $first: "$_id" },
+          date_end: { $first: "$date_end" },
+        },
+      },
+    ]);
+
+    const expiredUserIds = latestUserAbonnements
+      .filter((a: any) => new Date(a.date_end) < now)
+      .map((a: any) => a._id);
+    const activeUserIds = latestUserAbonnements
+      .filter((a: any) => new Date(a.date_end) >= now)
+      .map((a: any) => a._id);
+
+    const expiredWorkshopIds = latestWorkshopAbonnements
+      .filter((a: any) => new Date(a.date_end) < now)
+      .map((a: any) => a._id);
+    const activeWorkshopIds = latestWorkshopAbonnements
+      .filter((a: any) => new Date(a.date_end) >= now)
+      .map((a: any) => a._id);
+
+    // Expired subscriptions => status false
+    const userExpiredResult = expiredUserIds.length
+      ? await User.updateMany({ _id: { $in: expiredUserIds } }, { status: false })
+      : { modifiedCount: 0 };
+    const workshopExpiredResult = expiredWorkshopIds.length
+      ? await Workshop.updateMany({ _id: { $in: expiredWorkshopIds } }, { status: false })
+      : { modifiedCount: 0 };
+
+    // Active subscriptions => ensure status true
+    const userActiveResult = activeUserIds.length
+      ? await User.updateMany({ _id: { $in: activeUserIds } }, { status: true })
+      : { modifiedCount: 0 };
+    const workshopActiveResult = activeWorkshopIds.length
+      ? await Workshop.updateMany({ _id: { $in: activeWorkshopIds } }, { status: true })
+      : { modifiedCount: 0 };
+
+    return res.status(200).json({
+      ok: true,
+      message: "Synchronisation des abonnements expirés terminée",
+      stats: {
+        expiredUsers: expiredUserIds.length,
+        expiredWorkshops: expiredWorkshopIds.length,
+        reactivatedUsers: activeUserIds.length,
+        reactivatedWorkshops: activeWorkshopIds.length,
+        modifiedUsersExpired: userExpiredResult.modifiedCount || 0,
+        modifiedWorkshopsExpired: workshopExpiredResult.modifiedCount || 0,
+        modifiedUsersActive: userActiveResult.modifiedCount || 0,
+        modifiedWorkshopsActive: workshopActiveResult.modifiedCount || 0,
+      },
+    });
+  } catch (error: any) {
+    console.error("Error syncing expired abonnements:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la synchronisation des abonnements expirés",
+      error: error.message,
+    });
+  }
+});
+
 // Get all type abonnements
 router.get("/types", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
   try {
@@ -294,6 +379,58 @@ router.get("/client", authenticateToken, requireAdmin, async (req: Request, res:
     return res.status(500).json({
       ok: false,
       message: "Erreur lors de la récupération des abonnements",
+      error: error.message,
+    });
+  }
+});
+
+// Admin: get last abonnement for a specific client (User/Workshop)
+router.get("/client/last", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { clientId, clientType } = req.query;
+
+    if (!clientId || typeof clientId !== "string") {
+      return res.status(400).json({ ok: false, message: "clientId est requis" });
+    }
+    if (!clientType || typeof clientType !== "string" || !["User", "Workshop"].includes(clientType)) {
+      return res.status(400).json({ ok: false, message: "clientType doit être 'User' ou 'Workshop'" });
+    }
+
+    const last = await ClientAbonnement.findOne({
+      client: clientId,
+      clientType,
+    })
+      .populate("type_abonnement")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    if (!last) {
+      return res.status(200).json({
+        ok: true,
+        hasLast: false,
+        abonnement: null,
+      });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      hasLast: true,
+      abonnement: {
+        ...last,
+        id: (last as any)._id?.toString() || (last as any).id,
+        type_abonnement: (last as any).type_abonnement
+          ? {
+              ...(last as any).type_abonnement,
+              id: (last as any).type_abonnement._id?.toString() || (last as any).type_abonnement.id,
+            }
+          : null,
+      },
+    });
+  } catch (error: any) {
+    console.error("Error fetching last abonnement:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la récupération du dernier abonnement",
       error: error.message,
     });
   }

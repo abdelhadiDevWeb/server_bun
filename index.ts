@@ -68,12 +68,15 @@ io.on('connection', (socket) => {
   // Join admin room when authenticated
   socket.on('join_admin', (adminId: string) => {
     socket.join(`admin_${adminId}`);
+    // Global admins room (for broadcasting events to all admins)
+    socket.join('admins');
     console.log(`Socket ${socket.id} joined admin_${adminId}`);
   });
 
   // Leave admin room
   socket.on('leave_admin', (adminId: string) => {
     socket.leave(`admin_${adminId}`);
+    socket.leave('admins');
     console.log(`Socket ${socket.id} left admin_${adminId}`);
   });
 
