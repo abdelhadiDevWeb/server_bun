@@ -8,6 +8,41 @@ import path from "path";
 
 const router = Router();
 
+// Batch get user profile images by owner IDs (public)
+// POST /api/user-image/batch { ownerIds: string[] } -> { ok: true, data: Record<ownerId, imagePath> }
+router.post("/batch", async (req: Request, res: Response) => {
+  try {
+    const ownerIds = req.body?.ownerIds;
+    if (!Array.isArray(ownerIds)) {
+      return res.status(400).json({
+        ok: false,
+        message: "ownerIds must be an array of strings",
+      });
+    }
+    const ids = ownerIds.filter((id: any) => typeof id === "string" && id.trim().length > 0).slice(0, 100);
+    if (ids.length === 0) {
+      return res.status(200).json({ ok: true, data: {} });
+    }
+
+    const images = await UserImage.find({ id_owner: { $in: ids } })
+      .select("id_owner image")
+      .lean();
+
+    const map: Record<string, string> = {};
+    for (const img of images) {
+      if (img?.id_owner && img?.image) map[String(img.id_owner)] = String(img.image);
+    }
+
+    return res.status(200).json({ ok: true, data: map });
+  } catch (err: any) {
+    console.error("Batch get user images error:", err);
+    return res.status(500).json({
+      ok: false,
+      message: err?.message ?? "Erreur serveur",
+    });
+  }
+});
+
 // Get user profile image by owner ID
 router.get("/:ownerId", async (req: Request, res: Response) => {
   try {

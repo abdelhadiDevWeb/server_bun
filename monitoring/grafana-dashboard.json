@@ -1,0 +1,226 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "Cars App - Application Dashboard",
+    "tags": ["cars", "app", "business"],
+    "style": "dark",
+    "timezone": "browser",
+    "editable": true,
+    "hideControls": false,
+    "graphTooltip": 1,
+    "panels": [
+      {
+        "id": 1,
+        "title": "Active Cars",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "cars_active",
+            "format": "time_series",
+            "legendFormat": "Active Cars"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "steps": [
+                {"color": "red", "value": 0},
+                {"color": "yellow", "value": 10},
+                {"color": "green", "value": 50}
+              ]
+            }
+          }
+        },
+        "gridPos": {"h": 8, "w": 6, "x": 0, "y": 0}
+      },
+      {
+        "id": 2,
+        "title": "Active Users",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "users_active",
+            "format": "time_series",
+            "legendFormat": "Active Users"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "steps": [
+                {"color": "red", "value": 0},
+                {"color": "yellow", "value": 20},
+                {"color": "green", "value": 100}
+              ]
+            }
+          }
+        },
+        "gridPos": {"h": 8, "w": 6, "x": 6, "y": 0}
+      },
+      {
+        "id": 3,
+        "title": "Active Workshops",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "workshops_active",
+            "format": "time_series",
+            "legendFormat": "Active Workshops"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "steps": [
+                {"color": "red", "value": 0},
+                {"color": "yellow", "value": 3},
+                {"color": "green", "value": 10}
+              ]
+            }
+          }
+        },
+        "gridPos": {"h": 8, "w": 6, "x": 12, "y": 0}
+      },
+      {
+        "id": 4,
+        "title": "System Uptime (hours)",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "system_uptime_seconds / 3600",
+            "format": "time_series",
+            "legendFormat": "Uptime Hours"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "h",
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "steps": [
+                {"color": "red", "value": 0},
+                {"color": "yellow", "value": 24},
+                {"color": "green", "value": 168}
+              ]
+            }
+          }
+        },
+        "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0}
+      },
+      {
+        "id": 5,
+        "title": "Messages & Notifications",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "messages_total",
+            "format": "time_series",
+            "legendFormat": "Total Messages"
+          },
+          {
+            "expr": "messages_unread",
+            "format": "time_series",
+            "legendFormat": "Unread Messages"
+          },
+          {
+            "expr": "notifications_total",
+            "format": "time_series",
+            "legendFormat": "Total Notifications"
+          },
+          {
+            "expr": "notifications_unread",
+            "format": "time_series",
+            "legendFormat": "Unread Notifications"
+          }
+        ],
+        "yAxes": [
+          {
+            "label": "Count",
+            "min": 0
+          }
+        ],
+        "legend": {
+          "show": true,
+          "values": true,
+          "current": true
+        },
+        "gridPos": {"h": 9, "w": 12, "x": 0, "y": 8}
+      },
+      {
+        "id": 6,
+        "title": "Cars by Status",
+        "type": "piechart",
+        "targets": [
+          {
+            "expr": "cars_active",
+            "format": "time_series",
+            "legendFormat": "Active"
+          },
+          {
+            "expr": "cars_sold",
+            "format": "time_series",
+            "legendFormat": "Sold"
+          },
+          {
+            "expr": "cars_total - cars_active - cars_sold",
+            "format": "time_series",
+            "legendFormat": "Pending"
+          }
+        ],
+        "legend": {
+          "displayMode": "list",
+          "placement": "right"
+        },
+        "gridPos": {"h": 9, "w": 12, "x": 12, "y": 8}
+      },
+      {
+        "id": 7,
+        "title": "Appointments Status",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "appointments_total",
+            "format": "time_series",
+            "legendFormat": "Total Appointments"
+          },
+          {
+            "expr": "appointments_pending",
+            "format": "time_series",
+            "legendFormat": "Pending Appointments"
+          }
+        ],
+        "yAxes": [
+          {
+            "label": "Count",
+            "min": 0
+          }
+        ],
+        "legend": {
+          "show": true,
+          "values": true,
+          "current": true
+        },
+        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 17}
+      }
+    ],
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "timepicker": {
+      "refresh_intervals": ["5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "1d"]
+    },
+    "refresh": "30s"
+  }
+}

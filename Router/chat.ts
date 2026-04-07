@@ -6,9 +6,41 @@ import { Notification } from "../Models/Notification";
 import { User } from "../Models/User";
 import { authenticateToken } from "../middleware/auth.middleware";
 import { sendPushNotification } from "../services/pushNotificationService";
+import { messagingRateLimiter } from "../middleware/enhancedSecurity.middleware";
+import { 
+  MessageIdempotencyManager, 
+  EventCoalescingManager, 
+  BackpressureManager 
+} from "../utils/messageIdempotency";
+import { logUserAction } from "../utils/logger";
 import mongoose from "mongoose";
 
 const router = Router();
+
+// Chat system health check endpoint
+router.get("/health", authenticateToken, async (req: Request, res: Response) => {
+  try {
+    // Only admin users can access this endpoint
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ ok: false, message: "Accès non autorisé" });
+    }
+
+    const backpressureStatus = BackpressureManager.getStatus();
+    const coalescingStats = EventCoalescingManager.getStats();
+
+    return res.json({
+      ok: true,
+      chatSystem: {
+        backpressure: backpressureStatus,
+        eventCoalescing: coalescingStats,
+        timestamp: new Date().toISOString(),
+      }
+    });
+  } catch (error: any) {
+    console.error("Error getting chat system health:", error);
+    return res.status(500).json({ ok: false, message: "Erreur serveur" });
+  }
+});
 
 // Get or create chat between two users
 router.post("/get-or-create", authenticateToken, async (req: Request, res: Response) => {
@@ -188,14 +220,20 @@ router.get("/my-chats", authenticateToken, async (req: Request, res: Response) =
 });
 
 // Send a message
-router.post("/send-message", authenticateToken, async (req: Request, res: Response) => {
+router.post("/send-message", 
+  messagingRateLimiter, 
+  authenticateToken, 
+  async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
     if (!userId) {
       return res.status(401).json({ ok: false, message: "Non authentifié" });
     }
 
-    const { id_Chat, message, id_reciver } = req.body;
+    const { id_Chat, message, id_reciver, messageId } = req.body;
+    
+    // Generate message ID if not provided (for idempotency)
+    const finalMessageId = messageId || MessageIdempotencyManager.generateMessageId();
 
     if (!id_Chat || !message || !id_reciver) {
       return res.status(400).json({ ok: false, message: "Tous les champs sont requis" });
@@ -203,6 +241,51 @@ router.post("/send-message", authenticateToken, async (req: Request, res: Respon
 
     if (!message.trim()) {
       return res.status(400).json({ ok: false, message: "Le message ne peut pas être vide" });
+    }
+
+    // Check idempotency - prevent duplicate message processing
+    const isAlreadyProcessed = await MessageIdempotencyManager.isMessageProcessed(
+      finalMessageId,
+      userId,
+      id_reciver
+    );
+
+    if (isAlreadyProcessed) {
+      // Return the existing message status
+      const existingStatus = await MessageIdempotencyManager.getMessageStatus(
+        finalMessageId,
+        userId,
+        id_reciver
+      );
+      
+      return res.json({
+        ok: true,
+        message: "Message déjà traité",
+        messageId: finalMessageId,
+        duplicate: true,
+        processedAt: existingStatus?.timestamp,
+      });
+    }
+
+    // Check rate limiting
+    const rateLimitCheck = await MessageIdempotencyManager.checkRateLimit(userId);
+    if (!rateLimitCheck.allowed) {
+      return res.status(429).json({
+        ok: false,
+        message: "Limite de messages atteinte. Veuillez ralentir.",
+        remainingMessages: rateLimitCheck.remainingMessages,
+        retryAfter: 60, // seconds
+      });
+    }
+
+    // Check backpressure
+    const backpressureCheck = BackpressureManager.shouldAcceptEvent();
+    if (!backpressureCheck.accept) {
+      return res.status(503).json({
+        ok: false,
+        message: "Système surchargé. Veuillez réessayer.",
+        reason: backpressureCheck.reason,
+      });
     }
 
     // Verify chat exists and user is part of it
@@ -222,6 +305,14 @@ router.post("/send-message", authenticateToken, async (req: Request, res: Respon
       return res.status(400).json({ ok: false, message: "Destinataire invalide" });
     }
 
+    // Mark message as being processed
+    await MessageIdempotencyManager.markMessageProcessed(
+      finalMessageId,
+      userId,
+      id_reciver,
+      { message: message.trim(), chatId: id_Chat }
+    );
+
     // Create message
     const newMessage = await MessageModel.create({
       id_Chat: id_Chat,
@@ -229,6 +320,20 @@ router.post("/send-message", authenticateToken, async (req: Request, res: Respon
       id_sender: userId,
       id_reciver: id_reciver
     });
+
+    // Log user action
+    logUserAction(
+      userId,
+      'send_message',
+      'chat',
+      {
+        messageId: finalMessageId,
+        chatId: id_Chat,
+        receiverId: id_reciver,
+        messageLength: message.trim().length,
+      },
+      req.logger
+    );
 
     // Update chat's updatedAt
     await ChatModel.findByIdAndUpdate(id_Chat, { updatedAt: new Date() });
@@ -261,48 +366,80 @@ router.post("/send-message", authenticateToken, async (req: Request, res: Respon
       }
     );
 
-    // Send message via socket to receiver
+    // Send message via socket to receiver using event coalescing
     const io = (global as any).io;
     if (io) {
-      io.to(`user_${id_reciver}`).emit('new_message', {
-        id: newMessage.id,
-        id_Chat: newMessage.id_Chat.toString(),
-        message: newMessage.message,
-        id_sender: {
-          id: (newMessage.id_sender as any).id,
-          firstName: (newMessage.id_sender as any).firstName,
-          lastName: (newMessage.id_sender as any).lastName,
-          email: (newMessage.id_sender as any).email,
-          profileImage: (newMessage.id_sender as any).profileImage
-        },
-        id_reciver: {
-          id: (newMessage.id_reciver as any).id,
-          firstName: (newMessage.id_reciver as any).firstName,
-          lastName: (newMessage.id_reciver as any).lastName,
-          email: (newMessage.id_reciver as any).email,
-          profileImage: (newMessage.id_reciver as any).profileImage
-        },
-        read: newMessage.read,
-        createdAt: newMessage.createdAt,
-        updatedAt: newMessage.updatedAt
-      });
+      try {
+        // Prepare message data
+        const messageData = {
+          id: newMessage.id,
+          messageId: finalMessageId,
+          id_Chat: newMessage.id_Chat.toString(),
+          message: newMessage.message,
+          id_sender: {
+            id: (newMessage.id_sender as any).id,
+            firstName: (newMessage.id_sender as any).firstName,
+            lastName: (newMessage.id_sender as any).lastName,
+            email: (newMessage.id_sender as any).email,
+            profileImage: (newMessage.id_sender as any).profileImage
+          },
+          id_reciver: {
+            id: (newMessage.id_reciver as any).id,
+            firstName: (newMessage.id_reciver as any).firstName,
+            lastName: (newMessage.id_reciver as any).lastName,
+            email: (newMessage.id_reciver as any).email,
+            profileImage: (newMessage.id_reciver as any).profileImage
+          },
+          read: newMessage.read,
+          createdAt: newMessage.createdAt,
+          updatedAt: newMessage.updatedAt
+        };
 
-      // Send notification via socket
-      io.to(`user_${id_reciver}`).emit('new_notification', {
-        id: notification.id,
-        id_sender: userId,
-        id_receiver: id_reciver,
-        message: notification.message,
-        type: notification.type,
-        is_read: notification.is_read,
-        createdAt: notification.createdAt
-      });
+        // Prepare notification data
+        const notificationData = {
+          id: notification.id,
+          id_sender: userId,
+          id_receiver: id_reciver,
+          message: notification.message,
+          type: notification.type,
+          is_read: notification.is_read,
+          createdAt: notification.createdAt
+        };
+
+        // Use event coalescing for better performance under load
+        EventCoalescingManager.emitCoalesced(
+          io,
+          'new_message',
+          messageData,
+          `user_${id_reciver}`,
+          `message:${id_reciver}:${id_Chat}`
+        );
+
+        EventCoalescingManager.emitCoalesced(
+          io,
+          'new_notification',
+          notificationData,
+          `user_${id_reciver}`,
+          `notification:${id_reciver}`
+        );
+
+        // Record successful event processing
+        BackpressureManager.recordSuccess();
+      } catch (socketError: any) {
+        // Record socket error for backpressure management
+        BackpressureManager.recordError(`Socket emission failed: ${socketError.message}`);
+        console.error("Socket emission error:", socketError);
+        // Continue processing - socket errors shouldn't fail the message creation
+      }
     }
 
     return res.json({
       ok: true,
+      messageId: finalMessageId,
+      remainingMessages: rateLimitCheck.remainingMessages,
       message: {
         id: newMessage.id,
+        messageId: finalMessageId,
         id_Chat: newMessage.id_Chat.toString(),
         message: newMessage.message,
         id_sender: {

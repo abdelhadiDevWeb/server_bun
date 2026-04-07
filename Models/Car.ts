@@ -94,6 +94,14 @@ CarSchema.virtual("id").get(function (this: any) {
   return this._id?.toString();
 });
 
+// Add database indexes for optimal query performance
+CarSchema.index({ status: 1, createdAt: -1 }); // Public search with status filter
+CarSchema.index({ owner: 1, createdAt: -1 }); // User's cars
+CarSchema.index({ brand: 1, model: 1, status: 1 }); // Brand/model search
+CarSchema.index({ price: 1, status: 1 }); // Price filtering
+CarSchema.index({ year: 1, km: 1, status: 1 }); // Year/mileage filtering
+CarSchema.index({ vin: 1 }, { unique: true, sparse: true }); // VIN uniqueness
+
 CarSchema.set("toJSON", {
   virtuals: true,
   versionKey: false,

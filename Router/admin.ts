@@ -8,6 +8,7 @@ import { RendezVousWorkshop } from "../Models/RendezVousWorkshop";
 import { Notification } from "../Models/Notification";
 import { authenticateToken, requireAdmin } from "../middleware/auth.middleware";
 import { sendPushNotification } from "../services/pushNotificationService";
+import { paginateQuery, parsePaginationParams } from "../utils/pagination";
 import bcrypt from "bcrypt";
 import Joi from "joi";
 import { uploadUserImageSingle } from "../middleware/upload.middleware";
@@ -49,25 +50,48 @@ router.get("/users", authenticateToken, requireAdmin, async (req: Request, res: 
       };
     }
 
-    const users = await User.find(userQuery).select('-password').sort({ createdAt: -1 }).lean();
-    const workshops = await Workshop.find(workshopQuery).select('-password').sort({ createdAt: -1 }).lean();
+    // Parse pagination parameters
+    const paginationOptions = parsePaginationParams(req.query);
+    paginationOptions.maxLimit = 100; // Higher limit for admin interface
+    
+    // Get users with pagination
+    const usersResult = await paginateQuery(
+      User,
+      userQuery,
+      paginationOptions,
+      null // No population needed
+    );
 
-    // Map _id to id for users
-    const usersWithId = users.map((user: any) => ({
+    // Get workshops with pagination
+    const workshopsResult = await paginateQuery(
+      Workshop,
+      workshopQuery,
+      paginationOptions,
+      null // No population needed
+    );
+
+    // Map _id to id for users and remove password field
+    const usersWithId = usersResult.data.map((user: any) => ({
       ...user,
       id: user._id?.toString() || user.id,
+      password: undefined, // Ensure password is not returned
     }));
 
-    // Map _id to id for workshops
-    const workshopsWithId = workshops.map((workshop: any) => ({
+    // Map _id to id for workshops and remove password field
+    const workshopsWithId = workshopsResult.data.map((workshop: any) => ({
       ...workshop,
       id: workshop._id?.toString() || workshop.id,
+      password: undefined, // Ensure password is not returned
     }));
 
     return res.status(200).json({
       ok: true,
       users: usersWithId,
       workshops: workshopsWithId,
+      pagination: {
+        users: usersResult.pagination,
+        workshops: workshopsResult.pagination,
+      },
     });
   } catch (error: any) {
     console.error("Error fetching users and workshops:", error);

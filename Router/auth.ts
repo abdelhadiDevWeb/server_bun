@@ -11,8 +11,15 @@ import { Notification } from "../Models/Notification";
 import { sendVerificationEmail } from "../services/emailService";
 import { AppConfig } from "../config/app.config";
 import { validate, validationSchemas } from "../middleware/validation.middleware";
-import { authRateLimiter, emailVerificationRateLimiter } from "../middleware/rateLimit.middleware";
+import { 
+  authRateLimiter, 
+  progressiveAuthRateLimiter,
+  emailVerificationRateLimiter,
+  passwordResetRateLimiter,
+  sanitizeInput 
+} from "../middleware/enhancedSecurity.middleware";
 import { authenticateToken } from "../middleware/auth.middleware";
+import { logUserAction, logSecurityEvent } from "../utils/logger";
 
 const router = Router();
 
@@ -425,10 +432,27 @@ router.post("/verify-email", emailVerificationRateLimiter, validate(validationSc
 });
 
 // Login endpoint
-router.post("/login", authRateLimiter, validate(validationSchemas.login), async (req: Request, res: Response) => {
+router.post("/login", 
+  sanitizeInput,
+  authRateLimiter,
+  progressiveAuthRateLimiter,
+  validate(validationSchemas.login), 
+  async (req: Request, res: Response) => {
   try {
     // Body is already validated and sanitized by Joi middleware
     const { email, password } = req.body;
+    
+    // Log login attempt
+    logUserAction(
+      email,
+      'login_attempt',
+      'authentication',
+      {
+        ip: req.ip,
+        userAgent: req.headers['user-agent'],
+      },
+      req.logger
+    );
 
     // Try to find user first
     let user = await User.findOne({ email: email.toLowerCase().trim() }).lean();
@@ -441,6 +465,19 @@ router.post("/login", authRateLimiter, validate(validationSchemas.login), async 
     }
 
     if (!user) {
+      // Log failed login attempt
+      logSecurityEvent(
+        'login_failed_user_not_found',
+        undefined,
+        req.ip,
+        req.headers['user-agent'] as string,
+        {
+          email,
+          reason: 'user_not_found',
+        },
+        req.logger
+      );
+      
       return res.status(401).json({
         ok: false,
         message: "Email ou mot de passe incorrect",
@@ -450,6 +487,19 @@ router.post("/login", authRateLimiter, validate(validationSchemas.login), async 
     // Verify password
     const passwordMatch = await bcrypt.compare(String(password), user.password);
     if (!passwordMatch) {
+      // Log failed login attempt
+      logSecurityEvent(
+        'login_failed_wrong_password',
+        (user as any)._id?.toString(),
+        req.ip,
+        req.headers['user-agent'] as string,
+        {
+          email,
+          reason: 'wrong_password',
+        },
+        req.logger
+      );
+      
       return res.status(401).json({
         ok: false,
         message: "Email ou mot de passe incorrect",
@@ -500,6 +550,20 @@ router.post("/login", authRateLimiter, validate(validationSchemas.login), async 
       },
       AppConfig.JwtSecret,
       { expiresIn: "7d" }
+    );
+
+    // Log successful login
+    logUserAction(
+      userId,
+      'login_success',
+      'authentication',
+      {
+        userType,
+        role: userRole,
+        ip: req.ip,
+        userAgent: req.headers['user-agent'],
+      },
+      req.logger
     );
 
     // Remove password from response

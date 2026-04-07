@@ -1,10 +1,15 @@
+// Initialize Sentry first before any other imports
+import "dotenv/config";
+import { initializeSentryAsync, Sentry } from "./config/sentry";
+await initializeSentryAsync();
+
 import helmet from "helmet";
 import morgan from "morgan";
 // @ts-ignore - Express types issue with ESNext modules
 import express from "express";
 import rateLimit from "express-rate-limit";
+import { logger, correlationMiddleware, requestLoggingMiddleware, errorLoggingMiddleware } from "./utils/logger";
 import { connectDatabase } from "./Database/Mongoose";
-import "dotenv/config";
 import { AppConfig, ValidatAppConfig } from "./config/app.config";
 import Allversion from "./Router/index";
 import crypto from 'crypto'
@@ -14,6 +19,9 @@ import http from "http";
 import cors from 'cors'
 import path from 'path'
 import { Server as SocketIOServer } from 'socket.io'
+import { createAdapter } from '@socket.io/redis-adapter'
+import { connectRedis, redisPubClient, redisSubClient, disconnectRedis } from "./config/redis";
+import { EventCoalescingManager } from "./utils/messageIdempotency";
  
 
 
@@ -25,14 +33,27 @@ import { Server as SocketIOServer } from 'socket.io'
 const app = express();
 const server = http.createServer(app);
 
+// Sentry (v10): request/tracing handlers are provided by integrations.
+// We keep only the error handler via setupExpressErrorHandler(app) further below.
+
+// If you're running behind a proxy (ngrok / load balancer), Express must trust it
+// so req.ip and X-Forwarded-For are handled correctly (needed by express-rate-limit).
+app.set("trust proxy", 1);
+
 // Initialize Socket.IO
 const io = new SocketIOServer(server, {
   cors: {
     origin: process.env.NODE_ENV !== 'production' ? true : ["http://localhost:3000", "http://localhost:5173"],
     credentials: true,
     methods: ["GET", "POST"]
-  }
+  },
+  // Connection management for scaling
+  transports: ['websocket', 'polling'],
+  allowEIO3: true,
 });
+
+// Set up Redis adapter for horizontal scaling (will be configured after Redis connects)
+let redisAdapterConfigured = false;
 
 // Make io available globally for routes
 (global as any).io = io;
@@ -161,8 +182,9 @@ app.use((req: Request, res: Response, next: NextFunction) => {
    next()
 })
 
-
-app.use(morgan("dev"));
+// Structured logging middleware
+app.use(correlationMiddleware);
+app.use(requestLoggingMiddleware);
 
 // Enhanced Helmet configuration for better security
 app.use(
@@ -179,7 +201,12 @@ app.use(
         ],
         styleSrc: ["'self'", "'unsafe-inline'", "https:"],
         imgSrc: ["'self'", "data:", "https:"],
-        connectSrc: ["'self'", "https:"],
+        // In development allow http(s) connections (fetch, websockets) to local backends/frontends
+        // In production restrict to https and same-origin
+        connectSrc:
+          process.env.NODE_ENV !== "production"
+            ? ["'self'", "http:", "https:"]
+            : ["'self'", "https:"],
         fontSrc: ["'self'", "https:", "data:"],
         objectSrc: ["'none'"],
         mediaSrc: ["'self'"],
@@ -214,25 +241,241 @@ app.use(generalRateLimiter);
 
 app.use('/api' , Allversion)
 
+// Error logging middleware (before Sentry handler)
+app.use(errorLoggingMiddleware);
+
+// Sentry error handler must be after all routes but before other error handlers
+Sentry?.setupExpressErrorHandler?.(app);
+
+// Health check endpoint
+app.get('/api/health', async (_req: Request, res: Response) => {
+  const { checkRedisHealth } = await import('./config/redis');
+  
+  const health = {
+    ok: true,
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    services: {
+      redis: await checkRedisHealth(),
+      socketAdapter: redisAdapterConfigured,
+    }
+  };
+  
+  // Return 503 if Redis is down in production
+  if (process.env.NODE_ENV === 'production' && !health.services.redis) {
+    health.ok = false;
+    health.status = 'degraded';
+    return res.status(503).json(health);
+  }
+  
+  res.status(200).json(health);
+});
+
+// Cache warming endpoint (for deployments)
+app.post('/api/cache/warmup', async (_req: Request, res: Response) => {
+  try {
+    const { CachingService } = await import('./services/cachingService');
+    await CachingService.warmUpCaches();
+    
+    logger.info({
+      msg: 'Cache warm-up requested via API',
+    });
+    
+    res.status(200).json({ 
+      ok: true, 
+      message: 'Cache warm-up completed',
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    logger.error({
+      error,
+      msg: 'Cache warm-up failed',
+    });
+    
+    res.status(500).json({
+      ok: false,
+      message: 'Cache warm-up failed',
+    });
+  }
+});
+
+// Prometheus metrics endpoint
+app.get('/metrics', async (_req: Request, res: Response) => {
+  try {
+    const { MetricsService } = await import('./services/metricsService');
+    const metrics = await MetricsService.exportPrometheusMetrics();
+    
+    res.set('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+    res.status(200).send(metrics);
+  } catch (error) {
+    logger.error({
+      error,
+      msg: 'Error generating Prometheus metrics',
+    });
+    
+    res.status(500).send('# Error generating metrics\n');
+  }
+});
+
+// Application metrics endpoint (JSON format)
+app.get('/api/metrics', async (_req: Request, res: Response) => {
+  try {
+    const { MetricsService } = await import('./services/metricsService');
+    const metrics = await MetricsService.collectMetrics();
+    
+    res.status(200).json({
+      ok: true,
+      metrics,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    logger.error({
+      error,
+      msg: 'Error collecting application metrics',
+    });
+    
+    res.status(500).json({
+      ok: false,
+      message: 'Error collecting metrics',
+    });
+  }
+});
+
+// Metrics summary for admin dashboard
+app.get('/api/admin/metrics-summary', async (req: Request, res: Response) => {
+  try {
+    // Simple auth check - in production you'd use proper middleware
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Authorization required',
+      });
+    }
+
+    const { MetricsService } = await import('./services/metricsService');
+    const summary = await MetricsService.getMetricsSummary();
+    
+    res.status(200).json({
+      ok: true,
+      ...summary,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    logger.error({
+      error,
+      msg: 'Error getting metrics summary',
+    });
+    
+    res.status(500).json({
+      ok: false,
+      message: 'Error getting metrics summary',
+    });
+  }
+});
 
 ValidatAppConfig(async () => {
   try {
     // Connect to MongoDB
     await connectDatabase();
 
+    // Connect to Redis for caching and Socket.IO adapter
+    try {
+      await connectRedis();
+      
+      // Configure Socket.IO Redis adapter for horizontal scaling
+      if (redisPubClient.isOpen && redisSubClient.isOpen) {
+        const redisAdapter = createAdapter(redisPubClient, redisSubClient);
+        io.adapter(redisAdapter);
+        redisAdapterConfigured = true;
+        
+        logger.info({
+          msg: 'Socket.IO Redis adapter configured for horizontal scaling',
+        });
+      }
+    } catch (redisError) {
+      logger.warn({
+        error: redisError,
+        msg: 'Redis connection failed, continuing without Redis features',
+      });
+      
+      // In production, you might want to fail here
+      if (process.env.NODE_ENV === 'production') {
+        logger.error({
+          msg: 'Redis is required in production for scaling',
+        });
+      }
+    }
+
     // Run Server
     // Listen on all network interfaces (0.0.0.0) to allow connections from mobile devices
     // Use 'localhost' or '127.0.0.1' if you only want local connections
     server.listen(AppConfig.PORT, '0.0.0.0', () => {
-      console.log(`Server is running on port ${AppConfig.PORT}`);
-      console.log(`Accessible at: http://localhost:${AppConfig.PORT}`);
-      console.log(`For mobile devices, use your local IP address: http://YOUR_LOCAL_IP:${AppConfig.PORT}`);
+      logger.info({
+        port: AppConfig.PORT,
+        host: '0.0.0.0',
+        localUrl: `http://localhost:${AppConfig.PORT}`,
+        redisAdapter: redisAdapterConfigured,
+        msg: 'Server started successfully',
+      });
     });
   } catch (err: unknown) {
-    console.log('Error:', err);
+    logger.fatal({
+      error: err,
+      msg: 'Failed to start server',
+    });
     if (err instanceof Error) {
       throw err;
     }
     throw new Error('Unknown error occurred');
+  }
+});
+
+// Graceful shutdown handling
+process.on('SIGTERM', async () => {
+  logger.info({ msg: 'SIGTERM received, starting graceful shutdown' });
+  
+  try {
+    // Flush any pending coalesced events
+    EventCoalescingManager.flushAll(io);
+    
+    // Disconnect from Redis
+    await disconnectRedis();
+    
+    // Close the server
+    server.close(() => {
+      logger.info({ msg: 'Server closed gracefully' });
+      process.exit(0);
+    });
+    
+    // Force exit after 10 seconds
+    setTimeout(() => {
+      logger.error({ msg: 'Forced shutdown after 10 seconds' });
+      process.exit(1);
+    }, 10000);
+  } catch (error) {
+    logger.error({ error, msg: 'Error during graceful shutdown' });
+    process.exit(1);
+  }
+});
+
+process.on('SIGINT', async () => {
+  logger.info({ msg: 'SIGINT received, starting graceful shutdown' });
+  
+  try {
+    // Flush any pending coalesced events
+    EventCoalescingManager.flushAll(io);
+    
+    // Disconnect from Redis
+    await disconnectRedis();
+    
+    // Close the server
+    server.close(() => {
+      logger.info({ msg: 'Server closed gracefully' });
+      process.exit(0);
+    });
+  } catch (error) {
+    logger.error({ error, msg: 'Error during graceful shutdown' });
+    process.exit(1);
   }
 });

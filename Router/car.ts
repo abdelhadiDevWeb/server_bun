@@ -5,6 +5,9 @@ import { User } from "../Models/User";
 import { authenticateToken, requireSeller } from "../middleware/auth.middleware";
 import { uploadMultiple } from "../middleware/upload.middleware";
 import { validate, validationSchemas } from "../middleware/validation.middleware";
+import { paginateQuery, parsePaginationParams } from "../utils/pagination";
+import { CachingService } from "../services/cachingService";
+import { logger } from "../utils/logger";
 import Joi from "joi";
 import mongoose from "mongoose";
 import "dotenv/config";
@@ -534,7 +537,21 @@ router.post(
       }
 
       Car.create(carData)
-        .then((car) => {
+        .then(async (car) => {
+          // Invalidate car-related caches after successful creation
+          try {
+            await CachingService.invalidateCache('cars');
+            logger.info({
+              carId: car._id?.toString(),
+              msg: 'Car created, caches invalidated',
+            });
+          } catch (cacheError) {
+            logger.warn({
+              error: cacheError,
+              msg: 'Cache invalidation failed after car creation',
+            });
+          }
+          
           return res.status(201).json({
             ok: true,
             message: "Voiture ajoutée avec succès",
@@ -623,14 +640,18 @@ router.get("/my-cars", authenticateToken, requireSeller, async (req: Request, re
       });
     }
 
-    // If no excludeWorkshop, return all cars
-    const cars = await Car.find({ owner: userId })
-      .sort({ createdAt: -1 })
-      .lean();
+    // If no excludeWorkshop, return all cars with cursor pagination
+    const paginationOptions = parsePaginationParams(req.query);
+    const result = await paginateQuery(
+      Car,
+      { owner: userId },
+      paginationOptions
+    );
 
     return res.status(200).json({
       ok: true,
-      cars,
+      cars: result.data,
+      pagination: result.pagination,
     });
   } catch (err: any) {
     console.error("Error fetching cars:", err);
@@ -758,18 +779,77 @@ router.get("/active", async (req: Request, res: Response) => {
       query.usedby = { $regex: usedby, $options: 'i' };
     }
 
-    const cars = await Car.find(query)
-      .populate('owner', 'firstName lastName email phone certifie')
-      .sort({ createdAt: -1 })
-      .limit(50)
-      .lean();
+    // Parse pagination parameters
+    const paginationOptions = parsePaginationParams(req.query);
+    paginationOptions.maxLimit = 50; // Ensure reasonable limits for public API
+    
+    // Check if this is a simple query that can be cached
+    const isSimpleQuery = Object.keys(query).length <= 1; // Only status filter
+    const page = Math.max(1, Math.floor((paginationOptions.cursor ? 0 : 0) / (paginationOptions.limit || 20)) + 1);
+    const limit = paginationOptions.limit || 20;
+    
+    if (isSimpleQuery && !paginationOptions.cursor) {
+      // Use cached version for simple queries (no filters, first page)
+      try {
+        const cachedResult = await CachingService.getActiveCars({}, page, limit);
+        
+        // Convert to cursor pagination format for consistency
+        const hasNextPage = cachedResult.cars.length === limit;
+        const nextCursor = hasNextPage && cachedResult.cars.length > 0 
+          ? Buffer.from(cachedResult.cars[cachedResult.cars.length - 1].createdAt).toString('base64')
+          : null;
+        
+        logger.info({
+          fromCache: cachedResult.fromCache,
+          carCount: cachedResult.cars.length,
+          totalCount: cachedResult.totalCount,
+          msg: 'Active cars query served',
+        });
+        
+        return res.status(200).json({
+          ok: true,
+          cars: cachedResult.cars,
+          pagination: {
+            hasNextPage,
+            hasPreviousPage: page > 1,
+            nextCursor,
+            previousCursor: null,
+            totalCount: cachedResult.totalCount,
+          },
+          fromCache: cachedResult.fromCache,
+        });
+      } catch (cacheError) {
+        logger.warn({
+          error: cacheError,
+          msg: 'Cache failed, falling back to database',
+        });
+        // Fall through to database query
+      }
+    }
+    
+    // Apply cursor-based pagination for complex queries or cache miss
+    const result = await paginateQuery(
+      Car,
+      query,
+      paginationOptions,
+      { path: 'owner', select: 'firstName lastName email phone certifie' }
+    );
+
+    logger.info({
+      fromCache: false,
+      carCount: result.data.length,
+      hasNextPage: result.pagination.hasNextPage,
+      msg: 'Active cars query served from database',
+    });
 
     return res.status(200).json({
       ok: true,
-      cars: cars.map(car => ({
+      cars: result.data.map((car: any) => ({
         ...car,
         id: car._id?.toString(),
       })),
+      pagination: result.pagination,
+      fromCache: false,
     });
   } catch (err: any) {
     console.error("Get active cars error:", err);

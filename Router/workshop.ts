@@ -1,6 +1,8 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { Workshop } from "../Models/Workshop";
+import { CachingService } from "../services/cachingService";
+import { logger } from "../utils/logger";
 import mongoose from "mongoose";
 
 const router = Router();
@@ -9,22 +11,25 @@ const router = Router();
 // Only return workshops with status=true
 router.get("/active", async (req: Request, res: Response) => {
   try {
-    const workshops = await Workshop.find({ 
-      status: true
-    })
-      .select('-password')
-      .sort({ name: 1 })
-      .lean();
+    // Use caching service for active workshops
+    const result = await CachingService.getActiveWorkshops();
+    
+    logger.info({
+      fromCache: result.fromCache,
+      workshopCount: result.workshops.length,
+      msg: 'Active workshops query served',
+    });
 
     return res.status(200).json({
       ok: true,
-      workshops: workshops.map(workshop => ({
-        ...workshop,
-        id: workshop._id?.toString(),
-      })),
+      workshops: result.workshops,
+      fromCache: result.fromCache,
     });
   } catch (err: any) {
-    console.error("Get active workshops error:", err);
+    logger.error({
+      error: err,
+      msg: "Get active workshops error",
+    });
     return res.status(500).json({
       ok: false,
       message: err?.message ?? "Erreur serveur",

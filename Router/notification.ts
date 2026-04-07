@@ -6,6 +6,9 @@ import { Workshop } from "../Models/Workshop";
 import { MessageModel } from "../Models/Message";
 import { authenticateToken } from "../middleware/auth.middleware";
 import { requireAdmin } from "../middleware/auth.middleware";
+import { paginateQuery, parsePaginationParams } from "../utils/pagination";
+import { CachingService } from "../services/cachingService";
+import { logger } from "../utils/logger";
 import mongoose from "mongoose";
 
 const router = Router();
@@ -16,14 +19,21 @@ router.get("/admin/new-register/unread", authenticateToken, requireAdmin, async 
     const admins = await User.find({ role: "admin", status: true }).select("_id").lean();
     const adminIds = admins.map((a: any) => a._id);
 
-    const notificationsRaw = await Notification.find({
-      id_receiver: { $in: adminIds },
-      type: "new_register",
-      is_read: false,
-    })
-      .sort({ createdAt: -1 })
-      .limit(50)
-      .lean();
+    // Parse pagination parameters for admin notifications
+    const paginationOptions = parsePaginationParams(req.query);
+    paginationOptions.maxLimit = 50;
+    
+    const result = await paginateQuery(
+      Notification,
+      {
+        id_receiver: { $in: adminIds },
+        type: "new_register",
+        is_read: false,
+      },
+      paginationOptions
+    );
+    
+    const notificationsRaw = result.data;
 
     const notifications = await Promise.all(
       notificationsRaw.map(async (notif: any) => {
@@ -54,6 +64,7 @@ router.get("/admin/new-register/unread", authenticateToken, requireAdmin, async 
       ok: true,
       admins: adminIds.map((id: any) => id.toString()),
       notifications: deduped.map((n: any) => ({ ...n, id: n._id?.toString() })),
+      pagination: result.pagination,
     });
   } catch (err: any) {
     console.error("Get admin new-register unread notifications error:", err);
@@ -80,8 +91,18 @@ router.get("/", authenticateToken, async (req: Request, res: Response) => {
       query.type = type;
     }
 
-    const notificationsRaw = await Notification.find(query).sort({ createdAt: -1 }).limit(50).lean();
-    const notifications = await Promise.all(notificationsRaw.map(async (notif: any) => {
+    // Parse pagination parameters
+    const paginationOptions = parsePaginationParams(req.query);
+    paginationOptions.maxLimit = 50; // Ensure reasonable limits for notifications
+    
+    // Apply cursor-based pagination
+    const result = await paginateQuery(
+      Notification,
+      query,
+      paginationOptions
+    );
+
+    const notifications = await Promise.all(result.data.map(async (notif: any) => {
       let sender = await User.findById(notif.id_sender).select('firstName lastName email').lean();
       if (!sender) {
         sender = await Workshop.findById(notif.id_sender).select('name email').lean();
@@ -92,6 +113,7 @@ router.get("/", authenticateToken, async (req: Request, res: Response) => {
     return res.status(200).json({
       ok: true,
       notifications: notifications.map(notif => ({ ...notif, id: notif._id?.toString() })),
+      pagination: result.pagination,
     });
   } catch (err: any) {
     console.error("Get notifications error:", err);
@@ -167,6 +189,21 @@ router.put("/:id/read", authenticateToken, async (req: Request, res: Response) =
       );
     }
 
+    // Invalidate notification count cache after marking as read
+    try {
+      await CachingService.invalidateCache('notifications');
+      logger.debug({
+        userId,
+        notificationId: notification._id?.toString(),
+        msg: 'Notification caches invalidated after read',
+      });
+    } catch (cacheError) {
+      logger.warn({
+        error: cacheError,
+        msg: 'Cache invalidation failed after notification read',
+      });
+    }
+
     return res.status(200).json({ ok: true, message: "Notification marquÃ©e comme lue", notification: notification.toJSON() });
   } catch (err: any) {
     console.error("Mark notification as read error:", err);
@@ -209,6 +246,20 @@ router.put("/read-all", authenticateToken, async (req: Request, res: Response) =
       }
     }
     
+    // Invalidate notification count cache after marking all as read
+    try {
+      await CachingService.invalidateCache('notifications');
+      logger.debug({
+        userId,
+        msg: 'Notification caches invalidated after read all',
+      });
+    } catch (cacheError) {
+      logger.warn({
+        error: cacheError,
+        msg: 'Cache invalidation failed after read all notifications',
+      });
+    }
+
     return res.status(200).json({ ok: true, message: "Toutes les notifications ont Ã©tÃ© marquÃ©es comme lues" });
   } catch (err: any) {
     console.error("Mark all notifications as read error:", err);
@@ -224,6 +275,23 @@ router.put("/read-all-messages", authenticateToken, async (req: Request, res: Re
     }
     const userIdObjectId = mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : userId;
     await Notification.updateMany({ id_receiver: userIdObjectId, type: 'message', is_read: false }, { is_read: true });
+    // Invalidate message and notification count caches
+    try {
+      await Promise.all([
+        CachingService.invalidateCache('notifications'),
+        CachingService.invalidateCache('messages'),
+      ]);
+      logger.debug({
+        userId,
+        msg: 'Message and notification caches invalidated after read all messages',
+      });
+    } catch (cacheError) {
+      logger.warn({
+        error: cacheError,
+        msg: 'Cache invalidation failed after read all message notifications',
+      });
+    }
+
     return res.status(200).json({ ok: true, message: "Toutes les notifications de message ont Ã©tÃ© marquÃ©es comme lues" });
   } catch (err: any) {
     console.error("Mark all message notifications as read error:", err);
@@ -244,10 +312,78 @@ router.put("/read-chat-messages/:otherUserId", authenticateToken, async (req: Re
     const userIdObjectId = mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : userId;
     const otherUserIdObjectId = mongoose.Types.ObjectId.isValid(otherUserId) ? new mongoose.Types.ObjectId(otherUserId) : otherUserId;
     await Notification.updateMany({ id_receiver: userIdObjectId, id_sender: otherUserIdObjectId, type: 'message', is_read: false }, { is_read: true });
+    // Invalidate message and notification count caches for this user
+    try {
+      await Promise.all([
+        CachingService.invalidateCache('notifications'),
+        CachingService.invalidateCache('messages'),
+      ]);
+      logger.debug({
+        userId,
+        otherUserId,
+        msg: 'Message caches invalidated after chat read',
+      });
+    } catch (cacheError) {
+      logger.warn({
+        error: cacheError,
+        msg: 'Cache invalidation failed after chat read',
+      });
+    }
+
     return res.status(200).json({ ok: true, message: "Notifications de message marquÃ©es comme lues" });
   } catch (err: any) {
     console.error("Mark chat message notifications as read error:", err);
     return res.status(500).json({ ok: false, message: err?.message ?? "Erreur serveur" });
+  }
+});
+
+// Get unread counts with caching
+router.get("/unread-counts", authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: "Utilisateur non authentifié" });
+    }
+
+    // Get both notification and message counts in parallel with caching
+    const [notificationResult, messageResult] = await Promise.all([
+      CachingService.getUnreadNotificationsCount(userId),
+      CachingService.getUnreadMessagesCount(userId),
+    ]);
+    
+    logger.info({
+      userId,
+      notifications: {
+        count: notificationResult.count,
+        fromCache: notificationResult.fromCache,
+      },
+      messages: {
+        count: messageResult.count,
+        fromCache: messageResult.fromCache,
+      },
+      msg: 'Unread counts served',
+    });
+
+    return res.status(200).json({
+      ok: true,
+      unreadCounts: {
+        notifications: notificationResult.count,
+        messages: messageResult.count,
+      },
+      fromCache: {
+        notifications: notificationResult.fromCache,
+        messages: messageResult.fromCache,
+      },
+    });
+  } catch (err: any) {
+    logger.error({
+      error: err,
+      msg: "Get unread counts error",
+    });
+    return res.status(500).json({
+      ok: false,
+      message: err?.message ?? "Erreur serveur",
+    });
   }
 });
 

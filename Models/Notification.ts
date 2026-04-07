@@ -47,9 +47,11 @@ NotificationSchema.set("toJSON", {
   },
 });
 
-// Index for efficient queries
-NotificationSchema.index({ id_receiver: 1, is_read: 1 });
-NotificationSchema.index({ createdAt: -1 });
+// Enhanced indexes for efficient queries
+NotificationSchema.index({ id_receiver: 1, is_read: 1, createdAt: -1 }); // User notifications with read status
+NotificationSchema.index({ id_receiver: 1, type: 1, is_read: 1, createdAt: -1 }); // Filtered notifications
+NotificationSchema.index({ id_sender: 1, createdAt: -1 }); // Sender queries
+NotificationSchema.index({ type: 1, is_read: 1, createdAt: -1 }); // Admin type queries
 
 export type NotificationDocument = InferSchemaType<typeof NotificationSchema>;
 
