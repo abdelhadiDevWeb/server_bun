@@ -6,6 +6,7 @@
     "dev": "bun --watch index.ts",
     "dev:win": "bun index.ts",
     "start": "bun index.ts",
+    "build": "bun build index.ts --outdir dist --target bun --packages external",
     "add-indexes": "bun scripts/addIndexes.ts",
     "analyze-indexes": "bun scripts/addIndexes.ts analyze"
   },
