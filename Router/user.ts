@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { User } from "../Models/User";
+import { Workshop } from "../Models/Workshop";
 import { authenticateToken } from "../middleware/auth.middleware";
 
 const router = Router();
@@ -38,6 +39,7 @@ router.get("/certified-sellers", async (req: Request, res: Response) => {
 router.post("/push-token", authenticateToken, async (req: Request, res: Response) => {
   try {
     const userId = req.user?.id;
+    const userType = req.user?.type;
     if (!userId) {
       return res.status(401).json({ ok: false, message: "Utilisateur non authentifié" });
     }
@@ -52,15 +54,27 @@ router.post("/push-token", authenticateToken, async (req: Request, res: Response
       return res.status(400).json({ ok: false, message: "Plateforme invalide (ios ou android requis)" });
     }
 
-    // Update user with push token
-    await User.findByIdAndUpdate(userId, {
+    const update = {
       pushToken,
       platform,
       deviceId: deviceId || null,
       pushTokenUpdatedAt: new Date(),
-    });
+    };
 
-    console.log(`✅ Push token saved for user ${userId} (${platform})`);
+    // Save token for the authenticated principal (User or Workshop)
+    if (userType === 'workshop') {
+      const updated = await Workshop.findByIdAndUpdate(userId, update, { new: true }).select('_id').lean();
+      if (!updated) {
+        return res.status(404).json({ ok: false, message: "Atelier introuvable" });
+      }
+      console.log(`✅ Push token saved for workshop ${userId} (${platform})`);
+    } else {
+      const updated = await User.findByIdAndUpdate(userId, update, { new: true }).select('_id').lean();
+      if (!updated) {
+        return res.status(404).json({ ok: false, message: "Utilisateur introuvable" });
+      }
+      console.log(`✅ Push token saved for user ${userId} (${platform})`);
+    }
 
     return res.status(200).json({
       ok: true,
