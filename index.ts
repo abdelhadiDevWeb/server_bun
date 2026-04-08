@@ -43,7 +43,8 @@ app.set("trust proxy", 1);
 // Initialize Socket.IO
 const io = new SocketIOServer(server, {
   cors: {
-    origin: process.env.NODE_ENV !== 'production' ? true : ["http://localhost:3000", "http://localhost:5173"],
+    origin: true,
+    // origin: process.env.NODE_ENV !== 'production' ? true : ["http://localhost:3000", "http://localhost:5173"],
     credentials: true,
     methods: ["GET", "POST"]
   },
