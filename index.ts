@@ -43,9 +43,9 @@ app.set("trust proxy", 1);
 // Initialize Socket.IO
 const io = new SocketIOServer(server, {
   cors: {
-    origin:"*",
+    origin:"https://carsure-dz.vercel.app",
     // origin: process.env.NODE_ENV !== 'production' ? true : ["http://localhost:3000", "http://localhost:5173"],
-    credentials: false,
+    credentials: true,
     methods: ["GET", "POST"]
   },
   // Connection management for scaling
