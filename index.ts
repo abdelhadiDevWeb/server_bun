@@ -16,7 +16,7 @@ import crypto from 'crypto'
 import  {type Request , type Response , type NextFunction}  from 'express'
 import cookieParser from 'cookie-parser'
 import http from "http";
-import cors from 'cors'
+import cors, { type CorsOptions } from "cors";
 import path from 'path'
 import { Server as SocketIOServer } from 'socket.io'
 import { createAdapter } from '@socket.io/redis-adapter'
@@ -110,39 +110,31 @@ io.on('connection', (socket) => {
 
 // CORS configuration - Allow all origins in development for mobile apps
 // In production, restrict to specific domains
-const corsOptions = {
-  origin: function (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
-    // Allow requests with no origin (like mobile apps, Postman, curl)
-    if (!origin) {
-      return callback(null, true);
-    }
-    
-    // Allow localhost origins (web development)
-    const allowedOrigins = [
-      "http://localhost:3000",
-      "http://localhost:5173",
-      "http://127.0.0.1:3000",
-      "http://127.0.0.1:5173",
-    ];
-    
-    // Allow any origin in development (for mobile apps)
-    // Mobile apps don't have a traditional origin, so we allow all in dev
-    if (process.env.NODE_ENV !== 'production') {
-      return callback(null, true);
-    }
-    
-    // In production, only allow specific origins
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "http://127.0.0.1:3000",
+  "http://127.0.0.1:5173",
+  "https://carsure-dz.vercel.app",
+];
+
+const corsOptions: CorsOptions = {
+  origin(origin, callback) {
+    // السماح لـ Postman / mobile apps / curl
+    if (!origin) return callback(null, true);
+
     if (allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
+      return callback(null, true);
     }
+
+    console.log("❌ Blocked CORS origin:", origin);
+
+    return callback(new Error("CORS not allowed for: " + origin));
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
 };
-
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 // app.use(express.static('uploads/images'));
