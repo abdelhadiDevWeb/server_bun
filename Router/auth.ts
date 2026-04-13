@@ -15,11 +15,13 @@ import {
   authRateLimiter, 
   progressiveAuthRateLimiter,
   emailVerificationRateLimiter,
+  resendVerificationRateLimiter,
   passwordResetRateLimiter,
   sanitizeInput 
 } from "../middleware/enhancedSecurity.middleware";
 import { authenticateToken } from "../middleware/auth.middleware";
 import { logUserAction, logSecurityEvent } from "../utils/logger";
+import { sendPushNotification } from "../services/pushNotificationService";
 
 const router = Router();
 
@@ -67,6 +69,15 @@ const notifyAllAdmins = async (senderId: string, message: string, type: string =
             createdAt: notification.createdAt,
           });
         }
+
+        // Push when admin app is in background or killed (same as chat / RDV flows)
+        const pushTitle =
+          type === "new_register" ? "Nouvelle inscription" : "CarSure";
+        await sendPushNotification(admin._id, pushTitle, message, {
+          notificationId: notification._id.toString(),
+          type,
+          senderId: senderId,
+        });
 
         return notification;
       })
@@ -431,6 +442,75 @@ router.post("/verify-email", emailVerificationRateLimiter, validate(validationSc
   }
 });
 
+// Resend email verification code (unverified accounts only)
+router.post(
+  "/resend-verification",
+  sanitizeInput,
+  resendVerificationRateLimiter,
+  validate(validationSchemas.resendVerification),
+  async (req: Request, res: Response) => {
+    try {
+      const { email } = req.body;
+      const normalizedEmail = email.toLowerCase().trim();
+
+      let account = await User.findOne({ email: normalizedEmail }).lean();
+      let accType: "user" | "workshop" = "user";
+
+      if (!account) {
+        const w = await Workshop.findOne({ email: normalizedEmail }).lean();
+        if (!w) {
+          return res.status(200).json({ ok: true, sent: false });
+        }
+        account = w;
+        accType = "workshop";
+      }
+
+      if (account.verfie) {
+        return res.status(400).json({
+          ok: false,
+          alreadyVerified: true,
+          message: "Cet email est déjà vérifié.",
+        });
+      }
+
+      await EmailVerification.deleteMany({
+        email: normalizedEmail,
+        type: accType,
+      });
+
+      const code = generateCode();
+      const cleanCode = String(code)
+        .replace(/\D/g, "")
+        .trim()
+        .padStart(6, "0")
+        .slice(0, 6);
+
+      await EmailVerification.create({
+        email: normalizedEmail,
+        code: cleanCode,
+        type: accType,
+      });
+
+      const emailSent = await sendVerificationEmail(normalizedEmail, cleanCode);
+
+      return res.status(200).json({
+        ok: true,
+        sent: emailSent,
+        // Only set when an unverified account was found (not the anonymous no-account response)
+        ...(!emailSent ? { deliverFailed: true } : {}),
+        ...(process.env.NODE_ENV !== "production" && !emailSent
+          ? { verificationCode: cleanCode }
+          : {}),
+      });
+    } catch (err: any) {
+      console.error("Resend verification error:", err);
+      return res
+        .status(500)
+        .json({ ok: false, message: err?.message ?? "Server error" });
+    }
+  }
+);
+
 // Login endpoint
 router.post("/login", 
   sanitizeInput,
@@ -512,6 +592,7 @@ router.post("/login",
         ok: false,
         message: "Votre email n'a pas été vérifié. Veuillez vérifier votre email.",
         needsVerification: true,
+        accountType: userType,
       });
     }
 

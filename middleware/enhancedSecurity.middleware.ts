@@ -92,6 +92,21 @@ export const emailVerificationRateLimiter = createRateLimiter({
   message: "Trop de tentatives de vérification. Veuillez réessayer dans 5 minutes.",
 });
 
+/** Resend verification code (login / unverified account) */
+export const resendVerificationRateLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5,
+  message:
+    "Trop de demandes d'envoi de code. Veuillez réessayer dans 15 minutes.",
+  keyGenerator: (req: Request) => {
+    const body = req.body as { email?: string } | undefined;
+    const email = String(body?.email || "")
+      .toLowerCase()
+      .trim();
+    return `${req.ip}:${email}`;
+  },
+});
+
 /**
  * Rate limiter for password reset requests
  */

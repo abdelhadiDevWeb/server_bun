@@ -194,4 +194,16 @@ export const validationSchemas = {
         "any.required": "Le type est requis",
       }),
   }),
+
+  resendVerification: Joi.object({
+    email: Joi.string()
+      .trim()
+      .lowercase()
+      .email()
+      .required()
+      .messages({
+        "string.email": "Format d'email invalide",
+        "any.required": "L'email est requis",
+      }),
+  }),
 };

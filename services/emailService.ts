@@ -1,24 +1,66 @@
 import nodemailer from "nodemailer";
 import "dotenv/config";
 
-const SMTP_USER = process.env.SMTP_USER || process.env.EMAIL || "abdouhadi2002@gmail.com";
-const SMTP_PASSWORD = process.env.SMTP_PASSWORD || process.env.EMAIL_PASSWORD || "";
+/** Trim + strip accidental quotes from .env lines like PASSWORD="abc" or PASSWORD = x */
+function envClean(v: string | undefined): string {
+  if (!v) return "";
+  return v
+    .trim()
+    .replace(/^['"]+|['"]+$/g, "")
+    .replace(/^=+/, "");
+}
 
-// Create transporter only if credentials are available
-let transporter: nodemailer.Transporter | null = null;
+const SMTP_USER = envClean(
+  process.env.SMTP_USER || process.env.EMAIL || "abdouhadi2002@gmail.com"
+);
+const SMTP_PASSWORD = envClean(
+  process.env.SMTP_PASSWORD || process.env.EMAIL_PASSWORD
+);
+const SMTP_HOST = envClean(process.env.SMTP_HOST);
+const SMTP_PORT_RAW = envClean(process.env.SMTP_PORT);
+const SMTP_PORT = SMTP_PORT_RAW ? parseInt(SMTP_PORT_RAW, 10) : 587;
 
-if (SMTP_USER && SMTP_PASSWORD) {
-  transporter = nodemailer.createTransport({
+function buildSmtpTransport(): nodemailer.Transporter | null {
+  if (!SMTP_USER || !SMTP_PASSWORD) {
+    return null;
+  }
+
+  // Prefer explicit host/port from .env (matches Gmail + most providers)
+  if (SMTP_HOST) {
+    const port = Number.isFinite(SMTP_PORT) && SMTP_PORT > 0 ? SMTP_PORT : 587;
+    const secure = port === 465;
+    return nodemailer.createTransport({
+      host: SMTP_HOST,
+      port,
+      secure,
+      auth: {
+        user: SMTP_USER,
+        pass: SMTP_PASSWORD,
+      },
+      ...(port === 587
+        ? { requireTLS: true, tls: { minVersion: "TLSv1.2" as const } }
+        : {}),
+    });
+  }
+
+  return nodemailer.createTransport({
     service: "gmail",
     auth: {
       user: SMTP_USER,
       pass: SMTP_PASSWORD,
     },
   });
-  console.log(`✅ Email service configured with: ${SMTP_USER}`);
+}
+
+let transporter: nodemailer.Transporter | null = buildSmtpTransport();
+
+if (transporter) {
+  console.log(
+    `✅ Email service configured (${SMTP_HOST ? `host=${SMTP_HOST} port=${SMTP_PORT}` : "service=gmail"}) user=${SMTP_USER}`
+  );
 } else {
   console.warn("⚠️  SMTP_USER or SMTP_PASSWORD not configured. Email sending will be disabled.");
-  console.warn("   Please add SMTP_USER and SMTP_PASSWORD to your .env file in server_bun/");
+  console.warn("   Add SMTP_USER and SMTP_PASSWORD to server_bun/.env (Gmail: use a 16-char App Password).");
 }
 
 export const sendVerificationEmail = async (to: string, code: string): Promise<boolean> => {
