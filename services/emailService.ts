@@ -30,6 +30,9 @@ if (SMTP_USER && SMTP_PASSWORD) {
     tls: {
       minVersion: "TLSv1.2",
     },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 20000,
   });
   console.log(
     `✅ Email service configured (${SMTP_HOST}:${SMTP_PORT}, secure=${SMTP_SECURE}) with user ${SMTP_USER}`
@@ -63,6 +66,7 @@ export const sendVerificationEmail = async (to: string, code: string): Promise<b
       console.error("❌ Cannot send email: recipient is empty");
       return false;
     }
+    console.log(`📧 Attempting SMTP send to ${normalizedTo} via ${SMTP_HOST}:${SMTP_PORT} secure=${SMTP_SECURE}`);
 
     const mailOptions = {
       from: SMTP_FROM,
@@ -113,6 +117,9 @@ export const sendVerificationEmail = async (to: string, code: string): Promise<b
     }
     if (error?.response) {
       console.error("   SMTP server response:", error.response);
+    }
+    if (error?.command) {
+      console.error("   SMTP command:", error.command);
     }
     return false;
   }

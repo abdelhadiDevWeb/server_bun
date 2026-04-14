@@ -77,7 +77,13 @@ export const sendPushNotification = async (
       try {
         const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
         tickets.push(...ticketChunk);
-      } catch (error) {
+      } catch (error: any) {
+        const msg = String(error?.message || '');
+        if (msg.includes('FCM server key')) {
+          // Non-fatal for API flow: app can still proceed even if Expo push infra is not fully configured.
+          console.warn('⚠️ Expo push skipped: missing FCM server key for this app.');
+          return false;
+        }
         console.error('❌ Error sending push notification chunk:', error);
         return false;
       }
@@ -86,6 +92,11 @@ export const sendPushNotification = async (
     // Check for errors in tickets
     for (const ticket of tickets) {
       if (ticket.status === 'error') {
+        const ticketMessage = String(ticket.message || '');
+        if (ticketMessage.includes('FCM server key')) {
+          console.warn('⚠️ Expo push skipped: missing FCM server key for this app.');
+          return false;
+        }
         console.error(`❌ Push notification error: ${ticket.message}`);
         if (ticket.details?.error === 'DeviceNotRegistered') {
           // Token is no longer valid, remove it from database
