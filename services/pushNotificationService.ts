@@ -6,12 +6,15 @@ import mongoose from 'mongoose';
 // Create an Expo SDK client
 const expo = new Expo();
 
+const FCM_SETUP_HINT =
+  '[Push] Expo Android needs FCM: expo.dev -> Project -> Credentials -> Android -> Push Notifications. Rebuild APK with EAS after uploading credentials.';
+
 /**
  * Send push notification to a user
  * @param userId - User ID (can be User or Workshop)
  * @param title - Notification title
  * @param body - Notification body/message
- * @param data - Additional data to send with notification
+ * @param data - Additional data to send with the notification
  * @returns Promise<boolean> - true if sent successfully
  */
 export const sendPushNotification = async (
@@ -22,8 +25,8 @@ export const sendPushNotification = async (
 ): Promise<boolean> => {
   try {
     // Convert userId to ObjectId if needed
-    const userIdObjectId = mongoose.Types.ObjectId.isValid(userId) 
-      ? new mongoose.Types.ObjectId(userId) 
+    const userIdObjectId = mongoose.Types.ObjectId.isValid(userId)
+      ? new mongoose.Types.ObjectId(userId)
       : userId;
 
     // Try to find user first
@@ -41,7 +44,7 @@ export const sendPushNotification = async (
 
     // If user not found or no push token, return false
     if (!user || !(user as any).pushToken) {
-      console.log(`⚠️  No push token found for ${userType} ${userIdObjectId}`);
+      console.log(`[Push] No push token found for ${userType} ${userIdObjectId}`);
       return false;
     }
 
@@ -49,7 +52,7 @@ export const sendPushNotification = async (
 
     // Check if token is valid Expo push token
     if (!Expo.isExpoPushToken(pushToken)) {
-      console.error(`❌ Invalid Expo push token for ${userType} ${userIdObjectId}: ${pushToken}`);
+      console.error(`[Push] Invalid Expo push token for ${userType} ${userIdObjectId}: ${pushToken}`);
       return false;
     }
 
@@ -79,12 +82,11 @@ export const sendPushNotification = async (
         tickets.push(...ticketChunk);
       } catch (error: any) {
         const msg = String(error?.message || '');
-        if (msg.includes('FCM server key')) {
-          // Non-fatal for API flow: app can still proceed even if Expo push infra is not fully configured.
-          console.warn('⚠️ Expo push skipped: missing FCM server key for this app.');
+        if (msg.includes('FCM') || msg.toLowerCase().includes('fcm')) {
+          console.warn(FCM_SETUP_HINT);
           return false;
         }
-        console.error('❌ Error sending push notification chunk:', error);
+        console.error('[Push] Error sending push notification chunk:', error);
         return false;
       }
     }
@@ -93,14 +95,14 @@ export const sendPushNotification = async (
     for (const ticket of tickets) {
       if (ticket.status === 'error') {
         const ticketMessage = String(ticket.message || '');
-        if (ticketMessage.includes('FCM server key')) {
-          console.warn('⚠️ Expo push skipped: missing FCM server key for this app.');
+        if (ticketMessage.includes('FCM') || ticketMessage.toLowerCase().includes('fcm')) {
+          console.warn(FCM_SETUP_HINT);
           return false;
         }
-        console.error(`❌ Push notification error: ${ticket.message}`);
+        console.error(`[Push] Push notification error: ${ticket.message}`);
         if (ticket.details?.error === 'DeviceNotRegistered') {
           // Token is no longer valid, remove it from database
-          console.log(`🗑️  Removing invalid push token for ${userType} ${userIdObjectId}`);
+          console.log(`[Push] Removing invalid push token for ${userType} ${userIdObjectId}`);
           if (userType === 'user') {
             await User.findByIdAndUpdate(userIdObjectId, {
               pushToken: null,
@@ -119,10 +121,10 @@ export const sendPushNotification = async (
       }
     }
 
-    console.log(`✅ Push notification sent successfully to ${userType} ${userIdObjectId}`);
+    console.log(`[Push] Push notification sent successfully to ${userType} ${userIdObjectId}`);
     return true;
   } catch (error: any) {
-    console.error('❌ Error in sendPushNotification:', error);
+    console.error('[Push] Error in sendPushNotification:', error);
     return false;
   }
 };
@@ -142,7 +144,7 @@ export const sendPushNotificationToMultiple = async (
   data?: any
 ): Promise<number> => {
   let successCount = 0;
-  
+
   for (const userId of userIds) {
     const success = await sendPushNotification(userId, title, body, data);
     if (success) {
