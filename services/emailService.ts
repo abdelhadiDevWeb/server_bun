@@ -15,6 +15,8 @@ const SMTP_FROM = normalizeEnv(process.env.SMTP_FROM) || `CarSure DZ <${SMTP_USE
 const SMTP_SECURE = process.env.SMTP_SECURE === "true" || SMTP_PORT === 465;
 const RESEND_API_KEY = normalizeEnv(process.env.RESEND_API_KEY);
 const RESEND_FROM = normalizeEnv(process.env.RESEND_FROM) || SMTP_FROM;
+const USE_RESEND_PRIMARY =
+  normalizeEnv(process.env.EMAIL_PROVIDER).toLowerCase() === "resend" || !!RESEND_API_KEY;
 const IS_GMAIL_HOST = /gmail\.com$/i.test(SMTP_HOST);
 
 const htmlTemplate = (code: string): string => `
@@ -100,7 +102,7 @@ const sendWithResend = async (to: string, code: string): Promise<boolean> => {
 // Create transporter only if credentials are available
 let transporter: nodemailer.Transporter | null = null;
 
-if (SMTP_USER && SMTP_PASSWORD) {
+if (!USE_RESEND_PRIMARY && SMTP_USER && SMTP_PASSWORD) {
   transporter = buildTransporter(SMTP_HOST, SMTP_PORT, SMTP_SECURE);
   console.log(
     `✅ Email service configured (${SMTP_HOST}:${SMTP_PORT}, secure=${SMTP_SECURE}) with user ${SMTP_USER}`
@@ -118,10 +120,14 @@ if (SMTP_USER && SMTP_PASSWORD) {
       }
     });
 } else {
-  console.warn("⚠️ SMTP_USER or SMTP_PASSWORD not configured.");
-  if (!RESEND_API_KEY) {
-    console.warn("⚠️ No RESEND_API_KEY configured either. Email sending is disabled.");
+  if (USE_RESEND_PRIMARY && RESEND_API_KEY) {
+    console.log("✅ Email provider set to Resend (primary).");
   } else {
+    console.warn("⚠️ SMTP_USER or SMTP_PASSWORD not configured.");
+  }
+  if (!RESEND_API_KEY && !SMTP_PASSWORD) {
+    console.warn("⚠️ No RESEND_API_KEY configured either. Email sending is disabled.");
+  } else if (RESEND_API_KEY) {
     console.log("ℹ️ RESEND_API_KEY detected. Email will use Resend HTTPS API fallback.");
   }
 }
@@ -131,6 +137,11 @@ export const sendVerificationEmail = async (to: string, code: string): Promise<b
   if (!normalizedTo) {
     console.error("❌ Cannot send email: recipient is empty");
     return false;
+  }
+
+  if (USE_RESEND_PRIMARY && RESEND_API_KEY) {
+    console.log("📧 Sending verification email with Resend (primary)...");
+    return sendWithResend(normalizedTo, code);
   }
 
   if (!transporter) {
