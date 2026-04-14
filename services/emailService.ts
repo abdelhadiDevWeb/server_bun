@@ -1,66 +1,48 @@
 import nodemailer from "nodemailer";
 import "dotenv/config";
 
-/** Trim + strip accidental quotes from .env lines like PASSWORD="abc" or PASSWORD = x */
-function envClean(v: string | undefined): string {
-  if (!v) return "";
-  return v
-    .trim()
-    .replace(/^['"]+|['"]+$/g, "")
-    .replace(/^=+/, "");
-}
+const SMTP_HOST = process.env.SMTP_HOST || "smtp.gmail.com";
+const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
+const SMTP_USER = process.env.SMTP_USER || process.env.EMAIL || "";
+const SMTP_PASSWORD = process.env.SMTP_PASSWORD || process.env.EMAIL_PASSWORD || "";
+const SMTP_FROM = process.env.SMTP_FROM || `CarSure DZ <${SMTP_USER}>`;
+const SMTP_SECURE = process.env.SMTP_SECURE === "true" || SMTP_PORT === 465;
 
-const SMTP_USER = envClean(
-  process.env.SMTP_USER || process.env.EMAIL || "abdouhadi2002@gmail.com"
-);
-const SMTP_PASSWORD = envClean(
-  process.env.SMTP_PASSWORD || process.env.EMAIL_PASSWORD
-);
-const SMTP_HOST = envClean(process.env.SMTP_HOST);
-const SMTP_PORT_RAW = envClean(process.env.SMTP_PORT);
-const SMTP_PORT = SMTP_PORT_RAW ? parseInt(SMTP_PORT_RAW, 10) : 587;
+// Create transporter only if credentials are available
+let transporter: nodemailer.Transporter | null = null;
 
-function buildSmtpTransport(): nodemailer.Transporter | null {
-  if (!SMTP_USER || !SMTP_PASSWORD) {
-    return null;
-  }
-
-  // Prefer explicit host/port from .env (matches Gmail + most providers)
-  if (SMTP_HOST) {
-    const port = Number.isFinite(SMTP_PORT) && SMTP_PORT > 0 ? SMTP_PORT : 587;
-    const secure = port === 465;
-    return nodemailer.createTransport({
-      host: SMTP_HOST,
-      port,
-      secure,
-      auth: {
-        user: SMTP_USER,
-        pass: SMTP_PASSWORD,
-      },
-      ...(port === 587
-        ? { requireTLS: true, tls: { minVersion: "TLSv1.2" as const } }
-        : {}),
-    });
-  }
-
-  return nodemailer.createTransport({
-    service: "gmail",
+if (SMTP_USER && SMTP_PASSWORD) {
+  transporter = nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_SECURE,
     auth: {
       user: SMTP_USER,
       pass: SMTP_PASSWORD,
     },
+    // Required by some SMTP providers when using STARTTLS on port 587.
+    tls: {
+      minVersion: "TLSv1.2",
+    },
   });
-}
-
-let transporter: nodemailer.Transporter | null = buildSmtpTransport();
-
-if (transporter) {
   console.log(
-    `✅ Email service configured (${SMTP_HOST ? `host=${SMTP_HOST} port=${SMTP_PORT}` : "service=gmail"}) user=${SMTP_USER}`
+    `✅ Email service configured (${SMTP_HOST}:${SMTP_PORT}, secure=${SMTP_SECURE}) with user ${SMTP_USER}`
   );
+
+  void transporter
+    .verify()
+    .then(() => {
+      console.log("✅ SMTP connection verified successfully.");
+    })
+    .catch((err: any) => {
+      console.error("❌ SMTP verify failed:", err?.message || err);
+      if (err?.code) {
+        console.error(`   SMTP error code: ${err.code}`);
+      }
+    });
 } else {
   console.warn("⚠️  SMTP_USER or SMTP_PASSWORD not configured. Email sending will be disabled.");
-  console.warn("   Add SMTP_USER and SMTP_PASSWORD to server_bun/.env (Gmail: use a 16-char App Password).");
+  console.warn("   Please add SMTP_USER and SMTP_PASSWORD to your .env file in server_bun/");
 }
 
 export const sendVerificationEmail = async (to: string, code: string): Promise<boolean> => {
@@ -71,7 +53,7 @@ export const sendVerificationEmail = async (to: string, code: string): Promise<b
 
   try {
     const mailOptions = {
-      from: `CarSure DZ <${SMTP_USER}>`,
+      from: SMTP_FROM,
       to,
       subject: "Confirmation de votre email - CarSure DZ",
       html: `
@@ -111,6 +93,12 @@ export const sendVerificationEmail = async (to: string, code: string): Promise<b
       console.error("   Authentication failed. Please check SMTP_PASSWORD in .env");
       console.error("   For Gmail, you need to use an App Password, not your regular password.");
       console.error("   Steps: Google Account > Security > 2-Step Verification > App Passwords");
+    }
+    if (error?.code === "ECONNECTION" || error?.code === "ETIMEDOUT") {
+      console.error(`   Connection issue to ${SMTP_HOST}:${SMTP_PORT}. Check firewall/port and SMTP_HOST.`);
+    }
+    if (error?.response) {
+      console.error("   SMTP server response:", error.response);
     }
     return false;
   }

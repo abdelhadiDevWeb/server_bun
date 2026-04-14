@@ -181,28 +181,32 @@ router.post("/register/user", authRateLimiter, validate(validationSchemas.regist
       console.log(`✅ Code saved correctly: "${cleanCode}"`);
     }
 
-    const emailSent = await sendVerificationEmail(email, cleanCode);
-    if (!emailSent) {
-      console.error("Failed to send verification email to:", email);
-      console.log("⚠️  Verification code (for testing):", cleanCode);
-    } else {
-      console.log(`✅ Verification email sent to: ${email} with code: ${cleanCode}`);
-    }
+    // Run side-effects in background so registration response is never blocked.
+    void (async () => {
+      try {
+        const emailSent = await sendVerificationEmail(email, cleanCode);
+        if (!emailSent) {
+          console.error("Failed to send verification email to:", email);
+          console.log("⚠️  Verification code (for testing):", cleanCode);
+        } else {
+          console.log(`✅ Verification email sent to: ${email} with code: ${cleanCode}`);
+        }
+      } catch (e) {
+        console.error("Background sendVerificationEmail failed:", e);
+      }
+    })();
 
-    // Notify all admins about new user registration
-    await notifyAllAdmins(
+    void notifyAllAdmins(
       user._id.toString(),
       `Un nouveau client s'est inscrit: ${firstName} ${lastName} (${email})`
-    );
+    ).catch((e) => {
+      console.error("Background notifyAllAdmins failed:", e);
+    });
 
     return res.status(201).json({
       ok: true,
       user: user.toJSON(),
-      message: emailSent 
-        ? "Verification code sent to email" 
-        : "Account created but email failed. Please check SMTP_PASSWORD in server .env",
-      // In development, include code if email failed (remove in production)
-      ...(process.env.NODE_ENV !== "production" && !emailSent ? { verificationCode: code } : {}),
+      message: "Compte créé. Vérifiez votre email pour le code de confirmation.",
     });
   } catch (err: any) {
     return res.status(500).json({ ok: false, message: err?.message ?? "Server error" });
@@ -298,28 +302,32 @@ router.post("/register/workshop", authRateLimiter, validate(validationSchemas.re
       console.log(`✅ Code saved correctly: "${cleanCode}"`);
     }
 
-    const emailSent = await sendVerificationEmail(email, cleanCode);
-    if (!emailSent) {
-      console.error("Failed to send verification email to:", email);
-      console.log("⚠️  Verification code (for testing):", cleanCode);
-    } else {
-      console.log(`✅ Verification email sent to: ${email} with code: ${cleanCode}`);
-    }
+    // Run side-effects in background so registration response is never blocked.
+    void (async () => {
+      try {
+        const emailSent = await sendVerificationEmail(email, cleanCode);
+        if (!emailSent) {
+          console.error("Failed to send verification email to:", email);
+          console.log("⚠️  Verification code (for testing):", cleanCode);
+        } else {
+          console.log(`✅ Verification email sent to: ${email} with code: ${cleanCode}`);
+        }
+      } catch (e) {
+        console.error("Background sendVerificationEmail failed:", e);
+      }
+    })();
 
-    // Notify all admins about new workshop registration
-    await notifyAllAdmins(
+    void notifyAllAdmins(
       workshop._id.toString(),
       `Un nouvel atelier s'est inscrit: ${name} (${email})`
-    );
+    ).catch((e) => {
+      console.error("Background notifyAllAdmins failed:", e);
+    });
 
     return res.status(201).json({
       ok: true,
       workshop: workshop.toJSON(),
-      message: emailSent 
-        ? "Verification code sent to email" 
-        : "Account created but email failed. Please check SMTP_PASSWORD in server .env",
-      // In development, include code if email failed (remove in production)
-      ...(process.env.NODE_ENV !== "production" && !emailSent ? { verificationCode: code } : {}),
+      message: "Compte créé. Vérifiez votre email pour le code de confirmation.",
     });
   } catch (err: any) {
     return res.status(500).json({ ok: false, message: err?.message ?? "Server error" });
@@ -496,8 +504,6 @@ router.post(
       return res.status(200).json({
         ok: true,
         sent: emailSent,
-        // Only set when an unverified account was found (not the anonymous no-account response)
-        ...(!emailSent ? { deliverFailed: true } : {}),
         ...(process.env.NODE_ENV !== "production" && !emailSent
           ? { verificationCode: cleanCode }
           : {}),
