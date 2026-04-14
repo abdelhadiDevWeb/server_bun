@@ -184,6 +184,7 @@ router.post("/register/user", authRateLimiter, validate(validationSchemas.regist
     // Run side-effects in background so registration response is never blocked.
     void (async () => {
       try {
+        console.log(`📨 [register/user] Sending verification email to ${email}...`);
         const emailSent = await sendVerificationEmail(email, cleanCode);
         if (!emailSent) {
           console.error("Failed to send verification email to:", email);
@@ -305,6 +306,7 @@ router.post("/register/workshop", authRateLimiter, validate(validationSchemas.re
     // Run side-effects in background so registration response is never blocked.
     void (async () => {
       try {
+        console.log(`📨 [register/workshop] Sending verification email to ${email}...`);
         const emailSent = await sendVerificationEmail(email, cleanCode);
         if (!emailSent) {
           console.error("Failed to send verification email to:", email);

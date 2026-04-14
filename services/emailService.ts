@@ -1,11 +1,17 @@
 import nodemailer from "nodemailer";
 import "dotenv/config";
 
-const SMTP_HOST = process.env.SMTP_HOST || "smtp.gmail.com";
-const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
-const SMTP_USER = process.env.SMTP_USER || process.env.EMAIL || "";
-const SMTP_PASSWORD = process.env.SMTP_PASSWORD || process.env.EMAIL_PASSWORD || "";
-const SMTP_FROM = process.env.SMTP_FROM || `CarSure DZ <${SMTP_USER}>`;
+const normalizeEnv = (value: string | undefined): string =>
+  String(value || "")
+    .trim()
+    .replace(/^['"]+|['"]+$/g, "");
+
+const SMTP_HOST = normalizeEnv(process.env.SMTP_HOST) || "smtp.gmail.com";
+const SMTP_PORT = Number(normalizeEnv(process.env.SMTP_PORT) || "587");
+const SMTP_USER = normalizeEnv(process.env.SMTP_USER) || normalizeEnv(process.env.EMAIL);
+const SMTP_PASSWORD =
+  normalizeEnv(process.env.SMTP_PASSWORD) || normalizeEnv(process.env.EMAIL_PASSWORD);
+const SMTP_FROM = normalizeEnv(process.env.SMTP_FROM) || `CarSure DZ <${SMTP_USER}>`;
 const SMTP_SECURE = process.env.SMTP_SECURE === "true" || SMTP_PORT === 465;
 
 // Create transporter only if credentials are available
@@ -52,9 +58,15 @@ export const sendVerificationEmail = async (to: string, code: string): Promise<b
   }
 
   try {
+    const normalizedTo = normalizeEnv(to).toLowerCase();
+    if (!normalizedTo) {
+      console.error("❌ Cannot send email: recipient is empty");
+      return false;
+    }
+
     const mailOptions = {
       from: SMTP_FROM,
-      to,
+      to: normalizedTo,
       subject: "Confirmation de votre email - CarSure DZ",
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9fafb;">
@@ -84,8 +96,10 @@ export const sendVerificationEmail = async (to: string, code: string): Promise<b
       `,
     };
 
-    await transporter.sendMail(mailOptions);
-    console.log(`✅ Verification email sent to: ${to}`);
+    const info = await transporter.sendMail(mailOptions);
+    console.log(
+      `✅ Verification email sent to: ${normalizedTo} (messageId: ${info.messageId || "n/a"})`
+    );
     return true;
   } catch (error: any) {
     console.error("❌ Error sending email:", error?.message || error);

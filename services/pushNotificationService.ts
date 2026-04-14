@@ -56,7 +56,8 @@ export const sendPushNotification = async (
     // Create the message
     const message: ExpoPushMessage = {
       to: pushToken,
-      sound: true, // Use default system sound
+      // Expo expects a string ("default"), not boolean.
+      sound: 'default',
       title: title,
       body: body,
       data: {
