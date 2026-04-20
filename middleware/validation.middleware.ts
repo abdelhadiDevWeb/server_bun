@@ -206,4 +206,61 @@ export const validationSchemas = {
         "any.required": "L'email est requis",
       }),
   }),
+
+  forgotPasswordRequest: Joi.object({
+    email: Joi.string()
+      .trim()
+      .lowercase()
+      .email()
+      .required()
+      .messages({
+        "string.email": "Format d'email invalide",
+        "any.required": "L'email est requis",
+      }),
+  }),
+
+  forgotPasswordVerifyCode: Joi.object({
+    email: Joi.string()
+      .trim()
+      .lowercase()
+      .email()
+      .required()
+      .messages({
+        "string.email": "Format d'email invalide",
+        "any.required": "L'email est requis",
+      }),
+    code: Joi.string()
+      .trim()
+      .pattern(/^\d{6}$/)
+      .required()
+      .messages({
+        "string.pattern.base": "Le code doit contenir exactement 6 chiffres",
+        "any.required": "Le code est requis",
+      }),
+    type: Joi.string()
+      .valid("user", "workshop")
+      .required()
+      .messages({
+        "any.only": "Le type doit être 'user' ou 'workshop'",
+        "any.required": "Le type est requis",
+      }),
+  }),
+
+  forgotPasswordReset: Joi.object({
+    resetToken: Joi.string().trim().required().messages({
+      "any.required": "Le token de réinitialisation est requis",
+    }),
+    newPassword: Joi.string()
+      .min(8)
+      .max(128)
+      .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/)
+      .required()
+      .messages({
+        "string.min": "Le nouveau mot de passe doit contenir au moins 8 caractères",
+        "string.max": "Le nouveau mot de passe ne peut pas dépasser 128 caractères",
+        "string.pattern.base":
+          "Le nouveau mot de passe doit contenir au moins une majuscule, une minuscule, un chiffre et un caractère spécial",
+        "any.required": "Le nouveau mot de passe est requis",
+      }),
+  }),
 };

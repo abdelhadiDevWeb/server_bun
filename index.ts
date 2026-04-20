@@ -9,6 +9,10 @@ import morgan from "morgan";
 import express from "express";
 import rateLimit from "express-rate-limit";
 import { logger, correlationMiddleware, requestLoggingMiddleware, errorLoggingMiddleware } from "./utils/logger";
+import {
+  requestAccessFileLogMiddleware,
+  getAccessLogPathForDiagnostics,
+} from "./utils/requestAccessFileLog";
 import { connectDatabase } from "./Database/Mongoose";
 import { AppConfig, ValidatAppConfig } from "./config/app.config";
 import Allversion from "./Router/index";
@@ -177,6 +181,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 // Structured logging middleware
 app.use(correlationMiddleware);
+app.use(requestAccessFileLogMiddleware);
 app.use(requestLoggingMiddleware);
 
 // Enhanced Helmet configuration for better security
@@ -404,11 +409,13 @@ ValidatAppConfig(async () => {
     // Listen on all network interfaces (0.0.0.0) to allow connections from mobile devices
     // Use 'localhost' or '127.0.0.1' if you only want local connections
     server.listen(AppConfig.PORT, '0.0.0.0', () => {
+      const accessLog = getAccessLogPathForDiagnostics();
       logger.info({
         port: AppConfig.PORT,
         host: '0.0.0.0',
         localUrl: `http://localhost:${AppConfig.PORT}`,
         redisAdapter: redisAdapterConfigured,
+        requestAccessLog: accessLog.enabled ? accessLog.file : 'disabled',
         msg: 'Server started successfully',
       });
     });

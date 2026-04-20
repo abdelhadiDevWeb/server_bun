@@ -8,7 +8,7 @@ import { User } from "../Models/User";
 import { Workshop } from "../Models/Workshop";
 import { EmailVerification } from "../Models/EmailVerification";
 import { Notification } from "../Models/Notification";
-import { sendVerificationEmail } from "../services/emailService";
+import { sendVerificationEmail, sendPasswordResetEmail } from "../services/emailService";
 import { AppConfig } from "../config/app.config";
 import { validate, validationSchemas } from "../middleware/validation.middleware";
 import { 
@@ -31,6 +31,8 @@ const generateCode = (): string => {
   // Ensure it's exactly 6 digits and trim any whitespace
   return code.trim().padStart(6, '0').slice(0, 6);
 };
+
+const PASSWORD_RESET_JWT_SECRET = `${AppConfig.JwtSecret}_password_reset`;
 
 // Helper function to notify all admins
 // Creates a Notification record per admin and emits Socket.IO to each admin room.
@@ -169,6 +171,7 @@ router.post("/register/user", authRateLimiter, validate(validationSchemas.regist
       email: email.toLowerCase().trim(),
       code: cleanCode, // Store exactly as generated (6 digits only)
       type: "user",
+      purpose: "email_verification",
     });
     
     const savedCode = String(verificationDoc.code || '').replace(/\D/g, '').trim();
@@ -291,6 +294,7 @@ router.post("/register/workshop", authRateLimiter, validate(validationSchemas.re
       email: email.toLowerCase().trim(),
       code: cleanCode, // Store exactly as generated (6 digits only)
       type: "workshop",
+      purpose: "email_verification",
     });
     
     const savedCode = String(verificationDoc.code || '').replace(/\D/g, '').trim();
@@ -373,6 +377,7 @@ router.post("/verify-email", emailVerificationRateLimiter, validate(validationSc
     const verifications = await EmailVerification.find({
       email: normalizedEmail,
       type: normalizedType,
+      purpose: "email_verification",
     });
     
     console.log(`   Found ${verifications.length} verification(s) in database with type: ${normalizedType}`);
@@ -410,6 +415,7 @@ router.post("/verify-email", emailVerificationRateLimiter, validate(validationSc
         email: normalizedEmail,
         code: normalizedCode,
         type: normalizedType,
+        purpose: "email_verification",
       });
       if (verification) {
         console.log(`   ✅ Direct MongoDB query match found!`);
@@ -486,6 +492,7 @@ router.post(
       await EmailVerification.deleteMany({
         email: normalizedEmail,
         type: accType,
+        purpose: "email_verification",
       });
 
       const code = generateCode();
@@ -499,6 +506,7 @@ router.post(
         email: normalizedEmail,
         code: cleanCode,
         type: accType,
+        purpose: "email_verification",
       });
 
       const emailSent = await sendVerificationEmail(normalizedEmail, cleanCode);
@@ -515,6 +523,196 @@ router.post(
       return res
         .status(500)
         .json({ ok: false, message: err?.message ?? "Server error" });
+    }
+  }
+);
+
+router.post(
+  "/forgot-password/request",
+  sanitizeInput,
+  passwordResetRateLimiter,
+  validate(validationSchemas.forgotPasswordRequest),
+  async (req: Request, res: Response) => {
+    try {
+      const { email } = req.body;
+      const normalizedEmail = email.toLowerCase().trim();
+
+      const userAccount = await User.findOne({ email: normalizedEmail }).lean();
+      const workshopAccount = !userAccount
+        ? await Workshop.findOne({ email: normalizedEmail }).lean()
+        : null;
+
+      if (!userAccount && !workshopAccount) {
+        return res.status(404).json({
+          ok: false,
+          message: "Aucun compte trouvé avec cet email.",
+        });
+      }
+
+      const accountType: "user" | "workshop" = userAccount ? "user" : "workshop";
+      const code = generateCode();
+      const cleanCode = String(code).replace(/\D/g, "").trim().padStart(6, "0").slice(0, 6);
+
+      await EmailVerification.deleteMany({
+        email: normalizedEmail,
+        type: accountType,
+        purpose: "password_reset",
+      });
+
+      await EmailVerification.create({
+        email: normalizedEmail,
+        code: cleanCode,
+        type: accountType,
+        purpose: "password_reset",
+      });
+
+      const sent = await sendPasswordResetEmail(normalizedEmail, cleanCode);
+      if (!sent) {
+        return res.status(500).json({
+          ok: false,
+          message: "Impossible d'envoyer le code de réinitialisation.",
+        });
+      }
+
+      return res.status(200).json({
+        ok: true,
+        message: "Code de réinitialisation envoyé par email.",
+        accountType,
+      });
+    } catch (err: any) {
+      console.error("Forgot password request error:", err);
+      return res.status(500).json({
+        ok: false,
+        message: err?.message ?? "Server error",
+      });
+    }
+  }
+);
+
+router.post(
+  "/forgot-password/verify-code",
+  sanitizeInput,
+  passwordResetRateLimiter,
+  validate(validationSchemas.forgotPasswordVerifyCode),
+  async (req: Request, res: Response) => {
+    try {
+      const { email, code, type } = req.body;
+      const normalizedEmail = email.toLowerCase().trim();
+      const normalizedCode = String(code).replace(/\D/g, "").trim().padStart(6, "0").slice(0, 6);
+
+      const verification = await EmailVerification.findOne({
+        email: normalizedEmail,
+        type,
+        code: normalizedCode,
+        purpose: "password_reset",
+      }).sort({ createdAt: -1 });
+
+      if (!verification) {
+        return res.status(400).json({
+          ok: false,
+          message: "Code invalide.",
+        });
+      }
+
+      if (verification.expiresAt < new Date()) {
+        await EmailVerification.deleteOne({ _id: verification._id });
+        return res.status(400).json({
+          ok: false,
+          message: "Code expiré.",
+        });
+      }
+
+      const resetToken = jwt.sign(
+        {
+          email: normalizedEmail,
+          type,
+          purpose: "password_reset",
+        },
+        PASSWORD_RESET_JWT_SECRET,
+        { expiresIn: "15m" }
+      );
+
+      await EmailVerification.deleteOne({ _id: verification._id });
+
+      return res.status(200).json({
+        ok: true,
+        resetToken,
+        message: "Code vérifié avec succès.",
+      });
+    } catch (err: any) {
+      console.error("Forgot password verify code error:", err);
+      return res.status(500).json({
+        ok: false,
+        message: err?.message ?? "Server error",
+      });
+    }
+  }
+);
+
+router.post(
+  "/forgot-password/reset",
+  sanitizeInput,
+  passwordResetRateLimiter,
+  validate(validationSchemas.forgotPasswordReset),
+  async (req: Request, res: Response) => {
+    try {
+      const { resetToken, newPassword } = req.body;
+
+      const payload = jwt.verify(resetToken, PASSWORD_RESET_JWT_SECRET) as {
+        email?: string;
+        type?: "user" | "workshop";
+        purpose?: string;
+      };
+
+      if (!payload?.email || !payload?.type || payload.purpose !== "password_reset") {
+        return res.status(401).json({
+          ok: false,
+          message: "Token de réinitialisation invalide.",
+        });
+      }
+
+      const hashedPassword = await bcrypt.hash(String(newPassword), 10);
+
+      if (payload.type === "user") {
+        const updated = await User.updateOne(
+          { email: payload.email.toLowerCase().trim() },
+          { password: hashedPassword }
+        );
+        if (!updated.matchedCount) {
+          return res.status(404).json({ ok: false, message: "Compte introuvable." });
+        }
+      } else {
+        const updated = await Workshop.updateOne(
+          { email: payload.email.toLowerCase().trim() },
+          { password: hashedPassword }
+        );
+        if (!updated.matchedCount) {
+          return res.status(404).json({ ok: false, message: "Compte introuvable." });
+        }
+      }
+
+      await EmailVerification.deleteMany({
+        email: payload.email.toLowerCase().trim(),
+        type: payload.type,
+        purpose: "password_reset",
+      });
+
+      return res.status(200).json({
+        ok: true,
+        message: "Mot de passe réinitialisé avec succès.",
+      });
+    } catch (err: any) {
+      if (err?.name === "TokenExpiredError" || err?.name === "JsonWebTokenError") {
+        return res.status(401).json({
+          ok: false,
+          message: "Session expirée. Recommencez la réinitialisation.",
+        });
+      }
+      console.error("Forgot password reset error:", err);
+      return res.status(500).json({
+        ok: false,
+        message: err?.message ?? "Server error",
+      });
     }
   }
 );
@@ -594,13 +792,52 @@ router.post("/login",
       });
     }
 
-    // Check if account is verified (verfie)
+    // If email is not verified yet, send a fresh verification code and require confirmation.
+    // We return needsVerification so frontend can open confirmation modal.
     if (!user.verfie) {
+      let verificationEmailSent = false;
+      let cleanLoginCodeForDev: string | undefined;
+      try {
+        const normalizedEmail = user.email.toLowerCase().trim();
+        const verificationType = userType === "workshop" ? "workshop" : "user";
+        await EmailVerification.deleteMany({
+          email: normalizedEmail,
+          type: verificationType,
+          purpose: "email_verification",
+        });
+        const loginCode = generateCode();
+        const cleanLoginCode = String(loginCode)
+          .replace(/\D/g, "")
+          .trim()
+          .padStart(6, "0")
+          .slice(0, 6);
+        cleanLoginCodeForDev = cleanLoginCode;
+        await EmailVerification.create({
+          email: normalizedEmail,
+          code: cleanLoginCode,
+          type: verificationType,
+          purpose: "email_verification",
+        });
+        verificationEmailSent = await sendVerificationEmail(normalizedEmail, cleanLoginCode);
+        if (!verificationEmailSent) {
+          console.error(`Failed to send login verification email to: ${normalizedEmail}`);
+        }
+      } catch (verificationEmailErr: any) {
+        console.error("Error while resending login verification code:", verificationEmailErr);
+      }
+
       return res.status(403).json({
         ok: false,
-        message: "Votre email n'a pas été vérifié. Veuillez vérifier votre email.",
         needsVerification: true,
+        verificationEmailSent,
         accountType: userType,
+        email: user.email,
+        message: verificationEmailSent
+          ? "Votre email n'est pas encore vérifié. Un code de confirmation a été envoyé."
+          : "Votre email n'est pas encore vérifié. L'envoi du code a échoué — vérifiez la configuration email du serveur ou réessayez.",
+        ...(process.env.NODE_ENV !== "production" && !verificationEmailSent && cleanLoginCodeForDev
+          ? { verificationCode: cleanLoginCodeForDev }
+          : {}),
       });
     }
 
@@ -609,7 +846,7 @@ router.post("/login",
     if (!user.status) {
       return res.status(403).json({
         ok: false,
-        message: "Votre compte n'est pas encore activé par l'administrateur.",
+        message: "Votre email est confirmé, mais vous n'avez pas d'abonnement actif. Veuillez contacter l'administrateur.",
         needsActivation: true,
         status: false,
       });

@@ -98,12 +98,9 @@ export function requestLoggingMiddleware(req: Request, res: Response, next: Next
     },
     msg: 'Incoming request',
   });
-  
-  // Override res.end to log response
-  const originalEnd = res.end;
-  res.end = function(chunk?: any) {
+
+  res.on("finish", () => {
     const duration = Date.now() - startTime;
-    
     requestLogger.info({
       req: {
         method: req.method,
@@ -114,13 +111,10 @@ export function requestLoggingMiddleware(req: Request, res: Response, next: Next
         headers: res.getHeaders(),
       },
       duration,
-      msg: 'Request completed',
+      msg: "Request completed",
     });
-    
-    // Call original end method
-    originalEnd.call(res, chunk);
-  };
-  
+  });
+
   next();
 }
 

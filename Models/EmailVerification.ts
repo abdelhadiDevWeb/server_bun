@@ -15,6 +15,13 @@ const EmailVerificationSchema = new Schema(
       }
     },
     type: { type: String, required: true, enum: ["user", "workshop"] },
+    purpose: {
+      type: String,
+      required: true,
+      enum: ["email_verification", "password_reset"],
+      default: "email_verification",
+      index: true,
+    },
     expiresAt: { type: Date, required: true, default: () => new Date(Date.now() + 15 * 60 * 1000) }, // 15 minutes
   },
   { timestamps: true }
