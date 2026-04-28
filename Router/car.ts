@@ -663,7 +663,8 @@ router.get("/my-cars", authenticateToken, requireSeller, async (req: Request, re
 });
 
 // Get single car by ID (public endpoint) - must be after specific routes like /my-cars
-// Get all cars except those with status 'vendue' (public endpoint) with optional search filters
+// Get all cars except sold (public endpoint) with optional search filters.
+// $nin covers legacy "vendue" values if any exist in older documents.
 router.get("/active", async (req: Request, res: Response) => {
   try {
     const { 
@@ -684,8 +685,7 @@ router.get("/active", async (req: Request, res: Response) => {
       usedby
     } = req.query;
 
-    // Build query - exclude cars with status 'vendue'
-    const query: any = { status: { $ne: 'vendue' } };
+    const query: any = { status: { $nin: ['sold', 'vendue'] } };
 
     if (brand && typeof brand === 'string') {
       query.brand = { $regex: brand, $options: 'i' };

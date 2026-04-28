@@ -43,7 +43,7 @@ export class CachingService {
       }
 
       // Query database
-      const query = { status: { $ne: 'vendue' }, ...filters };
+      const query = { status: { $nin: ['sold', 'vendue'] }, ...filters };
       const skip = (page - 1) * limit;
       
       const [cars, totalCount] = await Promise.all([
@@ -278,7 +278,7 @@ export class CachingService {
       const [brands, priceRanges, yearRanges] = await Promise.all([
         // Get unique brands with counts
         Car.aggregate([
-          { $match: { status: { $ne: 'vendue' } } },
+          { $match: { status: { $nin: ['sold', 'vendue'] } } },
           { $group: { _id: '$brand', count: { $sum: 1 } } },
           { $sort: { count: -1 } },
           { $limit: 20 },
@@ -286,7 +286,7 @@ export class CachingService {
         
         // Get price distribution
         Car.aggregate([
-          { $match: { status: { $ne: 'vendue' } } },
+          { $match: { status: { $nin: ['sold', 'vendue'] } } },
           {
             $bucket: {
               groupBy: '$price',
@@ -299,7 +299,7 @@ export class CachingService {
         
         // Get year distribution
         Car.aggregate([
-          { $match: { status: { $ne: 'vendue' } } },
+          { $match: { status: { $nin: ['sold', 'vendue'] } } },
           {
             $bucket: {
               groupBy: '$year',
