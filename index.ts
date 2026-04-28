@@ -144,12 +144,15 @@ app.options("*", cors(corsOptions));
 // app.use(express.static('uploads/images'));
 // app.use(express.static("uploads/pdf"));
 // app.use(express.static("uploads/video"));
-app.use('/uploads/images', express.static(path.join(__dirname, 'uploads/images')));
-app.use('/uploads/pdf', express.static(path.join(__dirname, 'uploads/pdf')));
-app.use('/uploads/video', express.static(path.join(__dirname, 'uploads/video')));
-app.use('/uploads/users_images', express.static(path.join(__dirname, 'uploads/users_images')));
-app.use('/uploads/rdv_images', express.static(path.join(__dirname, 'uploads/rdv_images')));
-app.use('/uploads/rdv_pdf', express.static(path.join(__dirname, 'uploads/rdv_pdf')));
+// Keep uploads root aligned with multer destinations (relative to process cwd),
+// especially on platforms like Render where cwd can differ from source dir.
+const uploadsRoot = path.resolve(process.cwd(), 'uploads');
+app.use('/uploads/images', express.static(path.join(uploadsRoot, 'images')));
+app.use('/uploads/pdf', express.static(path.join(uploadsRoot, 'pdf')));
+app.use('/uploads/video', express.static(path.join(uploadsRoot, 'video')));
+app.use('/uploads/users_images', express.static(path.join(uploadsRoot, 'users_images')));
+app.use('/uploads/rdv_images', express.static(path.join(uploadsRoot, 'rdv_images')));
+app.use('/uploads/rdv_pdf', express.static(path.join(uploadsRoot, 'rdv_pdf')));
 app.use(express.json({ limit: "100mb" }));
 app.use(express.urlencoded({extended:true , limit:'100mb'}))
 app.use(express.json());
