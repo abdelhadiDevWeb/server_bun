@@ -8,6 +8,8 @@ import { User } from "../Models/User";
 import { Workshop } from "../Models/Workshop";
 import { EmailVerification } from "../Models/EmailVerification";
 import { Notification } from "../Models/Notification";
+import { TypeAbonnement } from "../Models/TypeAbonnement";
+import { ClientAbonnement } from "../Models/ClientAbonnement";
 import { sendVerificationEmail, sendPasswordResetEmail } from "../services/emailService";
 import { AppConfig } from "../config/app.config";
 import { validate, validationSchemas } from "../middleware/validation.middleware";
@@ -468,17 +470,66 @@ router.post("/verify-email", emailVerificationRateLimiter, validate(validationSc
     }
 
     // Update user/workshop verfie status
+    const normalizedEmailLower = email.toLowerCase();
     if (type === "user") {
-      await User.updateOne({ email: email.toLowerCase() }, { verfie: true });
+      await User.updateOne({ email: normalizedEmailLower }, { verfie: true });
     } else if (type === "workshop") {
-      await Workshop.updateOne({ email: email.toLowerCase() }, { verfie: true });
+      await Workshop.updateOne({ email: normalizedEmailLower }, { verfie: true });
     }
 
     // Delete used verification code
     await EmailVerification.deleteOne({ _id: verification._id });
-    console.log(`✅ Email verified successfully for ${email.toLowerCase()}`);
+    console.log(`✅ Email verified successfully for ${normalizedEmailLower}`);
 
-    return res.status(200).json({ ok: true, message: "Email vérifié avec succès!" });
+    // Auto-assign Starter Plan abonnement if it exists and is active
+    let starterPlanAssigned = false;
+    try {
+      const starterPlan = await TypeAbonnement.findOne({ name: 'Starter Plan', status: 'actif' });
+      if (starterPlan) {
+        const clientType = normalizedType === 'user' ? 'User' : 'Workshop';
+        let clientDoc: any = null;
+
+        if (clientType === 'User') {
+          clientDoc = await User.findOne({ email: normalizedEmailLower });
+        } else {
+          clientDoc = await Workshop.findOne({ email: normalizedEmailLower });
+        }
+
+        if (clientDoc) {
+          const dateStart = new Date();
+          const dateEnd = new Date();
+          dateEnd.setDate(dateEnd.getDate() + starterPlan.time);
+
+          await ClientAbonnement.create({
+            type_abonnement: starterPlan._id,
+            client: clientDoc._id,
+            clientType,
+            date_start: dateStart,
+            date_end: dateEnd,
+            price: starterPlan.price,
+          });
+
+          if (clientType === 'User') {
+            await User.updateOne({ _id: clientDoc._id }, { status: true });
+          } else {
+            await Workshop.updateOne({ _id: clientDoc._id }, { status: true });
+          }
+
+          starterPlanAssigned = true;
+          console.log(`✅ Starter Plan auto-assigned to ${clientType} ${normalizedEmailLower}`);
+        }
+      } else {
+        console.log(`ℹ️ No active Starter Plan found, skipping auto-assignment`);
+      }
+    } catch (starterErr: any) {
+      console.error('Error auto-assigning Starter Plan:', starterErr);
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message: "Email vérifié avec succès!",
+      starterPlanAssigned,
+    });
   } catch (err: any) {
     console.error("❌ Error verifying email:", err);
     return res.status(500).json({ ok: false, message: err?.message ?? "Server error" });

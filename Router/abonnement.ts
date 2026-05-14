@@ -205,6 +205,17 @@ router.patch("/types/:id", authenticateToken, requireAdmin, async (req: Request,
       return res.status(400).json({ ok: false, message: "Identifiant invalide" });
     }
 
+    const existing = await TypeAbonnement.findById(id);
+    if (!existing) {
+      return res.status(404).json({ ok: false, message: "Type d'abonnement non trouvé" });
+    }
+    if (existing.name === 'Starter Plan') {
+      return res.status(403).json({
+        ok: false,
+        message: "Le plan « Starter Plan » ne peut pas être modifié",
+      });
+    }
+
     const { error, value } = updateTypeAbonnementSchema.validate(req.body, {
       abortEarly: false,
       stripUnknown: true,
@@ -240,6 +251,38 @@ router.patch("/types/:id", authenticateToken, requireAdmin, async (req: Request,
     return res.status(500).json({
       ok: false,
       message: "Erreur lors de la mise à jour du type d'abonnement",
+      error: error.message,
+    });
+  }
+});
+
+// Admin: toggle status (actif/block) for a subscription type
+router.patch("/types/:id/toggle-status", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ ok: false, message: "Identifiant invalide" });
+    }
+
+    const typeAbonnement = await TypeAbonnement.findById(id);
+    if (!typeAbonnement) {
+      return res.status(404).json({ ok: false, message: "Type d'abonnement non trouvé" });
+    }
+
+    const newStatus = typeAbonnement.status === 'actif' ? 'block' : 'actif';
+    typeAbonnement.status = newStatus;
+    await typeAbonnement.save();
+
+    return res.status(200).json({
+      ok: true,
+      message: `Type d'abonnement ${newStatus === 'block' ? 'bloqué' : 'activé'}`,
+      type: typeAbonnement,
+    });
+  } catch (error: any) {
+    console.error("Error toggling type abonnement status:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors du changement de statut",
       error: error.message,
     });
   }

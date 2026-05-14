@@ -5,6 +5,11 @@ const TypeAbonnementSchema = new Schema(
     name: { type: String, required: true, trim: true },
     time: { type: Number, required: true }, // Duration in days
     price: { type: Number, required: true },
+    status: { 
+      type: String, 
+      enum: ['actif', 'block'], 
+      default: 'actif' 
+    },
   },
   { timestamps: true }
 );
