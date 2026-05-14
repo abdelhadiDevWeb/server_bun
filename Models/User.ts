@@ -11,6 +11,13 @@ const UserSchema = new Schema(
     status: { type: Boolean, default: false },
     verfie: { type: Boolean, default: false },
     certifie: { type: Boolean, default: false },
+    /** Last known seller position (GPS + reverse geocode) for nearby workshops */
+    locationLat: { type: Number, default: null },
+    locationLng: { type: Number, default: null },
+    locationFormattedAddress: { type: String, default: null, trim: true },
+    locationRegion: { type: String, default: null, trim: true },
+    locationCity: { type: String, default: null, trim: true },
+    locationCountry: { type: String, default: null, trim: true },
     profileImage: { type: String, default: null },
     // Push notification tokens
     pushToken: { type: String, default: null, sparse: true },

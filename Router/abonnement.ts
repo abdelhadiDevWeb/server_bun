@@ -1,5 +1,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
+import mongoose from "mongoose";
+import Joi from "joi";
 import { TypeAbonnement } from "../Models/TypeAbonnement";
 import { ClientAbonnement } from "../Models/ClientAbonnement";
 import { User } from "../Models/User";
@@ -7,6 +9,12 @@ import { Workshop } from "../Models/Workshop";
 import { authenticateToken, requireAdmin, requireSeller } from "../middleware/auth.middleware";
 
 const router = Router();
+
+const updateTypeAbonnementSchema = Joi.object({
+  name: Joi.string().trim().min(1).max(100).optional(),
+  time: Joi.number().integer().min(1).optional(),
+  price: Joi.number().min(0).optional(),
+}).min(1);
 
 // Admin: sync expired abonnements and update user/workshop status
 router.post("/client/sync-expired", authenticateToken, requireAdmin, async (_req: Request, res: Response) => {
@@ -184,6 +192,92 @@ router.post("/types/bulk", authenticateToken, requireAdmin, async (req: Request,
     return res.status(500).json({
       ok: false,
       message: "Erreur lors de la création des types d'abonnement",
+      error: error.message,
+    });
+  }
+});
+
+// Admin: update a subscription type (catalog only)
+router.patch("/types/:id", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ ok: false, message: "Identifiant invalide" });
+    }
+
+    const { error, value } = updateTypeAbonnementSchema.validate(req.body, {
+      abortEarly: false,
+      stripUnknown: true,
+    });
+    if (error) {
+      return res.status(400).json({
+        ok: false,
+        message: error.details.map((d) => d.message).join(", "),
+      });
+    }
+
+    const updated = await TypeAbonnement.findByIdAndUpdate(
+      id,
+      {
+        ...(value.name !== undefined ? { name: value.name } : {}),
+        ...(value.time !== undefined ? { time: value.time } : {}),
+        ...(value.price !== undefined ? { price: value.price } : {}),
+      },
+      { new: true, runValidators: true }
+    );
+
+    if (!updated) {
+      return res.status(404).json({ ok: false, message: "Type d'abonnement non trouvé" });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message: "Type d'abonnement mis à jour",
+      type: updated,
+    });
+  } catch (error: any) {
+    console.error("Error updating type abonnement:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la mise à jour du type d'abonnement",
+      error: error.message,
+    });
+  }
+});
+
+// Admin: delete a subscription type (only if unused by client abonnements)
+router.delete("/types/:id", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ ok: false, message: "Identifiant invalide" });
+    }
+
+    const inUse = await ClientAbonnement.countDocuments({
+      type_abonnement: new mongoose.Types.ObjectId(id),
+    });
+    if (inUse > 0) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          "Ce type est utilisé par des abonnements clients. Supprimez ou modifiez ces abonnements d'abord.",
+      });
+    }
+
+    const deleted = await TypeAbonnement.findByIdAndDelete(id);
+    if (!deleted) {
+      return res.status(404).json({ ok: false, message: "Type d'abonnement non trouvé" });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message: "Type d'abonnement supprimé",
+    });
+  } catch (error: any) {
+    console.error("Error deleting type abonnement:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la suppression du type d'abonnement",
       error: error.message,
     });
   }

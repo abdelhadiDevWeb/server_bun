@@ -1,4 +1,5 @@
 import "dotenv/config";
+import nodemailer from "nodemailer";
 
 const normalizeEnv = (value: string | undefined): string =>
   String(value || "")
@@ -7,6 +8,55 @@ const normalizeEnv = (value: string | undefined): string =>
 
 const RESEND_API_KEY = normalizeEnv(process.env.RESEND_API_KEY);
 const RESEND_FROM = normalizeEnv(process.env.RESEND_FROM) || "CarSure DZ <onboarding@resend.dev>";
+
+const SMTP_HOST = normalizeEnv(process.env.SMTP_HOST);
+const SMTP_PORT = parseInt(normalizeEnv(process.env.SMTP_PORT) || "587", 10);
+/** Full email for auth (Gmail: your.address@gmail.com). Aliases: EMAIL, GMAIL_USER */
+const SMTP_USER = normalizeEnv(
+  process.env.SMTP_USER || process.env.EMAIL || process.env.GMAIL_USER
+);
+/**
+ * App password / SMTP password. Aliases: EMAIL_PASSWORD, SMTP_PASS, GMAIL_APP_PASSWORD.
+ * Gmail app passwords are 16 chars; users often paste "xxxx xxxx xxxx xxxx" — spaces are stripped.
+ * If your password contains # or other characters that break .env parsing, set SMTP_PASSWORD_B64
+ * to the UTF-8 base64 encoding of the password instead.
+ */
+const smtpPasswordB64 = normalizeEnv(process.env.SMTP_PASSWORD_B64);
+const rawSmtpPassword = smtpPasswordB64
+  ? (() => {
+      try {
+        return Buffer.from(smtpPasswordB64, "base64").toString("utf8");
+      } catch {
+        return "";
+      }
+    })()
+  : normalizeEnv(
+      process.env.SMTP_PASSWORD ||
+        process.env.EMAIL_PASSWORD ||
+        process.env.SMTP_PASS ||
+        process.env.GMAIL_APP_PASSWORD
+    );
+const SMTP_PASSWORD = rawSmtpPassword.replace(/\s+/g, "");
+const SMTP_FROM =
+  normalizeEnv(process.env.SMTP_FROM) ||
+  (SMTP_USER ? `CarSure DZ <${SMTP_USER}>` : "CarSure DZ <noreply@localhost>");
+const SMTP_SECURE =
+  normalizeEnv(process.env.SMTP_SECURE).toLowerCase() === "true" || SMTP_PORT === 465;
+/** Use STARTTLS on 587 (recommended for Gmail, Outlook, most hosts). */
+const SMTP_REQUIRE_TLS =
+  normalizeEnv(process.env.SMTP_REQUIRE_TLS).toLowerCase() !== "false" &&
+  !SMTP_SECURE &&
+  (SMTP_PORT === 587 || SMTP_PORT === 25);
+
+const EMAIL_PROVIDER = normalizeEnv(process.env.EMAIL_PROVIDER).toLowerCase();
+
+const smtpConfigured =
+  Boolean(SMTP_HOST && SMTP_USER && SMTP_PASSWORD);
+
+const useSmtp =
+  EMAIL_PROVIDER === "smtp" ||
+  EMAIL_PROVIDER === "nodemailer" ||
+  (smtpConfigured && EMAIL_PROVIDER !== "resend");
 
 const passwordResetHtmlTemplate = (code: string): string => `
   <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9fafb;">
@@ -97,17 +147,79 @@ const sendWithResend = async (
   }
 };
 
-if (RESEND_API_KEY) {
+if (useSmtp && smtpConfigured) {
+  console.log(`✅ Email provider: SMTP (${SMTP_HOST}:${SMTP_PORT}, secure=${SMTP_SECURE}).`);
+  if (normalizeEnv(process.env.DEBUG_SMTP).toLowerCase() === "true") {
+    console.log(
+      `[DEBUG_SMTP] auth user=${SMTP_USER} passwordLength=${SMTP_PASSWORD.length} (if too short, check .env: # truncates unquoted values; use single quotes or SMTP_PASSWORD_B64)`
+    );
+  }
+} else if (RESEND_API_KEY) {
   console.log("✅ Email provider set to Resend.");
 } else {
-  console.warn("⚠️ RESEND_API_KEY is not configured. Email sending is disabled.");
+  console.warn(
+    "⚠️ No email provider: set SMTP_* + EMAIL_PROVIDER=smtp, or RESEND_API_KEY for Resend."
+  );
 }
+
+const sendWithSmtp = async (
+  to: string,
+  subject: string,
+  html: string
+): Promise<boolean> => {
+  if (!smtpConfigured) {
+    console.error("❌ SMTP is not fully configured (SMTP_HOST, SMTP_USER, SMTP_PASSWORD).");
+    return false;
+  }
+  try {
+    const transporter = nodemailer.createTransport({
+      host: SMTP_HOST,
+      port: SMTP_PORT,
+      secure: SMTP_SECURE,
+      requireTLS: SMTP_REQUIRE_TLS,
+      tls: {
+        minVersion: "TLSv1.2" as const,
+      },
+      connectionTimeout: 30_000,
+      greetingTimeout: 30_000,
+      auth: {
+        user: SMTP_USER,
+        pass: SMTP_PASSWORD,
+      },
+    });
+    await transporter.sendMail({
+      from: SMTP_FROM,
+      to,
+      subject,
+      html,
+    });
+    console.log(`✅ Email sent via SMTP to: ${to}`);
+    return true;
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error("❌ SMTP send error:", msg);
+    if (/535|Invalid login|authentication failed/i.test(msg)) {
+      console.error(
+        "   Hint (535): Wrong SMTP credentials or mailbox password. If SMTP_PASSWORD contains # use single quotes in .env: SMTP_PASSWORD='...' or SMTP_PASSWORD_B64=... For Gmail use an App Password (not your Google account password)."
+      );
+    }
+    return false;
+  }
+};
 
 export const sendVerificationEmail = async (to: string, code: string): Promise<boolean> => {
   const normalizedTo = normalizeEnv(to).toLowerCase();
   if (!normalizedTo) {
     console.error("❌ Cannot send email: recipient is empty");
     return false;
+  }
+  if (useSmtp && smtpConfigured) {
+    console.log("📧 Sending verification email via SMTP...");
+    return sendWithSmtp(
+      normalizedTo,
+      "Confirmation de votre email - CarSure DZ",
+      htmlTemplate(code)
+    );
   }
   console.log("📧 Sending verification email with Resend...");
   return sendWithResend(
@@ -122,6 +234,14 @@ export const sendPasswordResetEmail = async (to: string, code: string): Promise<
   if (!normalizedTo) {
     console.error("❌ Cannot send email: recipient is empty");
     return false;
+  }
+  if (useSmtp && smtpConfigured) {
+    console.log("📧 Sending password reset email via SMTP...");
+    return sendWithSmtp(
+      normalizedTo,
+      "Réinitialisation du mot de passe - CarSure DZ",
+      passwordResetHtmlTemplate(code)
+    );
   }
   console.log("📧 Sending password reset email with Resend...");
   return sendWithResend(

@@ -1,7 +1,9 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { Car } from "../Models/Car";
+import { Color } from "../Models/Color";
 import { User } from "../Models/User";
+import { Sponsor } from "../Models/Sponsor";
 import { authenticateToken, requireSeller } from "../middleware/auth.middleware";
 import { uploadMultiple } from "../middleware/upload.middleware";
 import { validate, validationSchemas } from "../middleware/validation.middleware";
@@ -608,15 +610,16 @@ router.get("/my-cars", authenticateToken, requireSeller, async (req: Request, re
 
     const { excludeWorkshop } = req.query;
 
-    // If excludeWorkshop is provided, filter out cars that have appointments with this workshop
+    // If excludeWorkshop is provided, filter out cars that have ACTIVE appointments with this workshop
     if (excludeWorkshop && mongoose.Types.ObjectId.isValid(excludeWorkshop as string)) {
       const { RendezVousWorkshop } = await import("../Models/RendezVousWorkshop");
       const workshopId = new mongoose.Types.ObjectId(excludeWorkshop as string);
       
-      // Find all cars that have appointments with this workshop
-      const carsWithAppointments = await RendezVousWorkshop.find({
+      // Only exclude cars with pending/active appointments (not finished or cancelled)
+      const carsWithActiveAppointments = await RendezVousWorkshop.find({
         id_workshop: workshopId,
         id_owner_car: userId,
+        status: { $in: ['en_attente', 'accepted', 'en_cours'] },
       })
         .distinct('id_car')
         .lean();
@@ -626,10 +629,10 @@ router.get("/my-cars", authenticateToken, requireSeller, async (req: Request, re
         .sort({ createdAt: -1 })
         .lean();
 
-      // Filter out cars that have appointments with this workshop
+      // Filter out cars that have active appointments with this workshop
       const filteredCars = allCars.filter(car => {
         const carId = car._id?.toString();
-        return !carsWithAppointments.some((appointmentCarId: any) => 
+        return !carsWithActiveAppointments.some((appointmentCarId: any) => 
           appointmentCarId?.toString() === carId
         );
       });
@@ -661,6 +664,71 @@ router.get("/my-cars", authenticateToken, requireSeller, async (req: Request, re
     });
   }
 });
+
+// Reference car colors from admin-managed list (public read for listing forms)
+router.get("/colors-reference", async (_req: Request, res: Response) => {
+  try {
+    const colors = await Color.find().sort({ name: 1 }).lean();
+    const list = colors.map((c: { _id: mongoose.Types.ObjectId; name: string }) => ({
+      id: c._id.toString(),
+      name: c.name,
+    }));
+    return res.status(200).json({ ok: true, colors: list });
+  } catch (err: any) {
+    logger.error({ err, msg: "Error listing reference colors" });
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la récupération des couleurs",
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Helper: enrich a list of cars with their currently-active sponsor (if any).
+// Used by /car/active so the mobile home page can promote sponsored cars to
+// the front of its hero carousel without needing a second round trip.
+// One Mongo query per request (regardless of how many cars are passed in).
+// ---------------------------------------------------------------------------
+async function attachActiveSponsors<T extends { _id?: any; id?: any }>(
+  cars: T[]
+): Promise<(T & { sponsor?: { id: string; start_date: Date; end_date: Date; duration: number; price: number } })[]> {
+  if (!cars || cars.length === 0) return cars as any;
+
+  const ids = cars
+    .map((c) => (c as any)._id ?? (c as any).id)
+    .filter((id) => id !== undefined && id !== null);
+
+  if (ids.length === 0) return cars as any;
+
+  const now = new Date();
+  const activeSponsors = await Sponsor.find({
+    id_car: { $in: ids },
+    status: true,
+    end_date: { $gt: now },
+  })
+    .select("id_car start_date end_date duration price")
+    .lean();
+
+  const byCarId = new Map<string, any>();
+  for (const s of activeSponsors as any[]) {
+    const cid = s.id_car?.toString();
+    if (cid && !byCarId.has(cid)) {
+      byCarId.set(cid, {
+        id: s._id?.toString(),
+        start_date: s.start_date,
+        end_date: s.end_date,
+        duration: s.duration,
+        price: s.price ?? 0,
+      });
+    }
+  }
+
+  return cars.map((car) => {
+    const cidStr = ((car as any)._id ?? (car as any).id)?.toString();
+    const sponsor = cidStr ? byCarId.get(cidStr) : undefined;
+    return sponsor ? { ...car, sponsor } : (car as any);
+  }) as any;
+}
 
 // Get single car by ID (public endpoint) - must be after specific routes like /my-cars
 // Get all cars except sold (public endpoint) with optional search filters.
@@ -806,9 +874,13 @@ router.get("/active", async (req: Request, res: Response) => {
           msg: 'Active cars query served',
         });
         
+        // Enrich with active sponsor info (live data, not cached) so callers
+        // like the home carousel can prioritize sponsored cars.
+        const enrichedCars = await attachActiveSponsors(cachedResult.cars);
+
         return res.status(200).json({
           ok: true,
-          cars: cachedResult.cars,
+          cars: enrichedCars,
           pagination: {
             hasNextPage,
             hasPreviousPage: page > 1,
@@ -842,12 +914,17 @@ router.get("/active", async (req: Request, res: Response) => {
       msg: 'Active cars query served from database',
     });
 
+    const carsWithId = result.data.map((car: any) => ({
+      ...car,
+      id: car._id?.toString(),
+    }));
+    // Enrich with active sponsor info so the home carousel can promote
+    // sponsored cars to the front.
+    const enrichedCars = await attachActiveSponsors(carsWithId);
+
     return res.status(200).json({
       ok: true,
-      cars: result.data.map((car: any) => ({
-        ...car,
-        id: car._id?.toString(),
-      })),
+      cars: enrichedCars,
       pagination: result.pagination,
       fromCache: false,
     });
@@ -1333,6 +1410,61 @@ router.delete(
     }
   }
 );
+
+/**
+ * Public VIN lookup (same verification as sellers; no auth — used by Scan tab).
+ * Returns 200 JSON so clients avoid treating “invalid VIN” as a transport error.
+ */
+router.post("/lookup-vin", async (req: Request, res: Response) => {
+  try {
+    const { vin } = req.body;
+
+    if (!vin || typeof vin !== "string") {
+      return res.status(200).json({
+        ok: true,
+        valid: false,
+        message: "VIN manquant",
+      });
+    }
+
+    const normalized = vin.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/g, "");
+
+    if (normalized.length !== 17) {
+      return res.status(200).json({
+        ok: true,
+        valid: false,
+        message: "Le VIN doit contenir exactement 17 caractères",
+      });
+    }
+
+    const vinResult = await verifyVIN(normalized);
+
+    if (!vinResult.valid) {
+      return res.status(200).json({
+        ok: true,
+        valid: false,
+        message: vinResult.error || "VIN invalide",
+      });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      valid: true,
+      message: "VIN valide",
+      remark: vinResult.remark || "VIN vérifié",
+      data: vinResult.data,
+      details: vinResult.details ?? null,
+    });
+  } catch (error: any) {
+    console.error("Error in lookup-vin:", error);
+    return res.status(500).json({
+      ok: false,
+      valid: false,
+      message: "Erreur lors de la vérification du VIN",
+      error: error?.message,
+    });
+  }
+});
 
 // Verify VIN endpoint
 router.post("/verify-vin", authenticateToken, requireSeller, async (req: Request, res: Response) => {

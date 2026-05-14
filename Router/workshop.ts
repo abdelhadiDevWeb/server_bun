@@ -7,11 +7,18 @@ import mongoose from "mongoose";
 
 const router = Router();
 
-// Get all active workshops (public endpoint)
-// Only return workshops with status=true
+// Get all active workshops (public endpoint).
+// Only returns workshops with status=true. Cached via CachingService.
+// Used by features that should only surface bookable workshops (e.g. the RDV
+// creation modal in the cars page).
 router.get("/active", async (req: Request, res: Response) => {
   try {
-    // Use caching service for active workshops
+    const skipCache = req.query.fresh === '1';
+
+    if (skipCache) {
+      await CachingService.invalidateActiveWorkshops();
+    }
+
     const result = await CachingService.getActiveWorkshops();
     
     logger.info({
@@ -29,6 +36,37 @@ router.get("/active", async (req: Request, res: Response) => {
     logger.error({
       error: err,
       msg: "Get active workshops error",
+    });
+    return res.status(500).json({
+      ok: false,
+      message: err?.message ?? "Erreur serveur",
+    });
+  }
+});
+
+// Get every workshop in the database (public endpoint).
+// No status filter, no Redis cache — used by the workshops listing page so the
+// user always sees the freshest, complete view of the table (including
+// pending / not-yet-activated workshops). The mobile UI then filters client-
+// side via the "all / certified / not_certified" tabs.
+router.get("/all", async (_req: Request, res: Response) => {
+  try {
+    const workshops = await Workshop.find()
+      .select('-password')
+      .sort({ certifie: -1, name: 1 })
+      .lean();
+
+    return res.status(200).json({
+      ok: true,
+      workshops: workshops.map((w: any) => ({
+        ...w,
+        id: w._id?.toString(),
+      })),
+    });
+  } catch (err: any) {
+    logger.error({
+      error: err,
+      msg: "Get all workshops error",
     });
     return res.status(500).json({
       ok: false,

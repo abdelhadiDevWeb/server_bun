@@ -399,6 +399,20 @@ export class CachingService {
   }
 
   /**
+   * Invalidate the cached `active_workshops` key. Call this whenever a workshop
+   * is created/updated/deleted so the next /workshop/active request returns
+   * fresh data instead of waiting for the 30-minute TTL to expire.
+   */
+  static async invalidateActiveWorkshops(): Promise<void> {
+    try {
+      await RedisCache.del('active_workshops');
+      logger.debug({ msg: 'active_workshops cache invalidated' });
+    } catch (error) {
+      logger.error({ error, msg: 'Failed to invalidate active_workshops cache' });
+    }
+  }
+
+  /**
    * Invalidate cache for a specific pattern
    */
   static async invalidateCache(pattern: string): Promise<void> {

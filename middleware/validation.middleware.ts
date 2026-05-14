@@ -148,6 +148,22 @@ export const validationSchemas = {
           "Le mot de passe doit contenir au moins une majuscule, une minuscule, un chiffre et un caractère spécial",
         "any.required": "Le mot de passe est requis",
       }),
+    locationLat: Joi.number().min(-90).max(90).required().messages({
+      "number.base": "La latitude est requise (positionnez l’atelier sur la carte)",
+      "any.required": "La latitude est requise (positionnez l’atelier sur la carte)",
+    }),
+    locationLng: Joi.number().min(-180).max(180).required().messages({
+      "number.base": "La longitude est requise (positionnez l’atelier sur la carte)",
+      "any.required": "La longitude est requise (positionnez l’atelier sur la carte)",
+    }),
+    locationFormattedAddress: Joi.string().trim().max(500).allow("", null).optional(),
+    googlePlaceId: Joi.string().trim().max(255).allow("", null).optional(),
+    locationCity: Joi.string().trim().max(120).allow("", null).optional(),
+    locationRegion: Joi.string().trim().max(120).allow("", null).optional(),
+    locationPostalCode: Joi.string().trim().max(32).allow("", null).optional(),
+    locationCountry: Joi.string().trim().max(120).allow("", null).optional(),
+    locationNeighborhood: Joi.string().trim().max(200).allow("", null).optional(),
+    locationStreetLine: Joi.string().trim().max(300).allow("", null).optional(),
   }),
 
   login: Joi.object({

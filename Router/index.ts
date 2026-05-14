@@ -15,6 +15,8 @@ import abonnementRouter from "./abonnement";
 import chatRouter from "./chat";
 import factureRouter from "./facture";
 import rateRouter from "./rate";
+import sponsorRouter from "./sponsor";
+import geocodeRouter from "./geocode";
 
 const router = Router();
 
@@ -38,6 +40,8 @@ router.use("/abonnement", abonnementRouter);
 router.use("/chat", chatRouter);
 router.use("/facture", factureRouter);
 router.use("/rate", rateRouter);
+router.use("/sponsor", sponsorRouter);
+router.use("/geocode", geocodeRouter);
 
 export default router;
 

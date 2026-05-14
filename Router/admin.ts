@@ -15,6 +15,10 @@ import { uploadUserImageSingle } from "../middleware/upload.middleware";
 import path from "path";
 import fs from "fs";
 import mongoose from "mongoose";
+import { Color } from "../Models/Color";
+import { AbonnementSponsor } from "../Models/AbonnementSponsor";
+import { CachingService } from "../services/cachingService";
+import { Sponsor } from "../Models/Sponsor";
 
 const router = Router();
 
@@ -261,6 +265,9 @@ router.patch("/workshops/:id/certifie", authenticateToken, requireAdmin, async (
       });
     }
 
+    // Bust the cached active workshops list so the change is visible immediately.
+    await CachingService.invalidateActiveWorkshops();
+
     const workshopWithId = {
       ...workshop,
       id: (workshop as any)._id?.toString() || (workshop as any).id,
@@ -331,6 +338,10 @@ router.patch("/workshops/:id/status", authenticateToken, requireAdmin, async (re
     }
 
     console.log("✅ Workshop status updated successfully:", workshop.email);
+
+    // Bust the cached active workshops list so the change is visible immediately
+    // (otherwise /workshop/active keeps returning the stale list for up to TTL).
+    await CachingService.invalidateActiveWorkshops();
 
     // Map _id to id
     const workshopWithId = {
@@ -1518,6 +1529,335 @@ router.post("/cars/:id/warning", authenticateToken, requireAdmin, async (req: Re
       ok: false,
       message: "Erreur lors de l'envoi de l'avertissement",
       error: error.message,
+    });
+  }
+});
+
+// —— Car colors (reference list for vehicle color names) ——
+const colorNameSchema = Joi.object({
+  name: Joi.string().trim().min(1).max(80).required(),
+});
+
+router.get("/colors", authenticateToken, requireAdmin, async (_req: Request, res: Response) => {
+  try {
+    const colors = await Color.find().sort({ name: 1 }).lean();
+    const list = colors.map((c: any) => ({
+      id: c._id.toString(),
+      name: c.name,
+      createdAt: c.createdAt,
+      updatedAt: c.updatedAt,
+    }));
+    return res.status(200).json({ ok: true, colors: list });
+  } catch (error: any) {
+    console.error("Error listing colors:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la récupération des couleurs",
+    });
+  }
+});
+
+router.post("/colors", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { error, value } = colorNameSchema.validate(req.body, { abortEarly: false });
+    if (error) {
+      return res.status(400).json({
+        ok: false,
+        message: error.details.map((d) => d.message).join(", "),
+      });
+    }
+    const existing = await Color.findOne({
+      name: { $regex: new RegExp(`^${value.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") },
+    });
+    if (existing) {
+      return res.status(409).json({
+        ok: false,
+        message: "Une couleur avec ce nom existe déjà",
+      });
+    }
+    const color = await Color.create({ name: value.name.trim() });
+    return res.status(201).json({
+      ok: true,
+      color: {
+        id: color._id.toString(),
+        name: color.name,
+        createdAt: color.createdAt,
+        updatedAt: color.updatedAt,
+      },
+    });
+  } catch (error: any) {
+    if (error?.code === 11000) {
+      return res.status(409).json({
+        ok: false,
+        message: "Une couleur avec ce nom existe déjà",
+      });
+    }
+    console.error("Error creating color:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la création de la couleur",
+    });
+  }
+});
+
+router.patch("/colors/:id", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ ok: false, message: "Identifiant invalide" });
+    }
+    const { error, value } = colorNameSchema.validate(req.body, { abortEarly: false });
+    if (error) {
+      return res.status(400).json({
+        ok: false,
+        message: error.details.map((d) => d.message).join(", "),
+      });
+    }
+    const trimmed = value.name.trim();
+    const duplicate = await Color.findOne({
+      name: { $regex: new RegExp(`^${trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") },
+      _id: { $ne: new mongoose.Types.ObjectId(id) },
+    });
+    if (duplicate) {
+      return res.status(409).json({
+        ok: false,
+        message: "Une couleur avec ce nom existe déjà",
+      });
+    }
+    const color = await Color.findByIdAndUpdate(
+      id,
+      { $set: { name: trimmed } },
+      { new: true, runValidators: true }
+    );
+    if (!color) {
+      return res.status(404).json({ ok: false, message: "Couleur introuvable" });
+    }
+    return res.status(200).json({
+      ok: true,
+      color: {
+        id: color._id.toString(),
+        name: color.name,
+        createdAt: color.createdAt,
+        updatedAt: color.updatedAt,
+      },
+    });
+  } catch (error: any) {
+    if (error?.code === 11000) {
+      return res.status(409).json({
+        ok: false,
+        message: "Une couleur avec ce nom existe déjà",
+      });
+    }
+    console.error("Error updating color:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la mise à jour de la couleur",
+    });
+  }
+});
+
+router.delete("/colors/:id", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ ok: false, message: "Identifiant invalide" });
+    }
+    const deleted = await Color.findByIdAndDelete(id);
+    if (!deleted) {
+      return res.status(404).json({ ok: false, message: "Couleur introuvable" });
+    }
+    return res.status(200).json({ ok: true, message: "Couleur supprimée" });
+  } catch (error: any) {
+    console.error("Error deleting color:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la suppression de la couleur",
+    });
+  }
+});
+
+// —— All car sponsorships (Sponsor collection) ——
+router.get("/sponsors", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const raw = parseInt(String(req.query.limit || "100"), 10);
+    const limit = Math.min(200, Math.max(1, Number.isFinite(raw) ? raw : 100));
+    const rows = await Sponsor.find({})
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .populate("id_car", "brand model year status")
+      .populate("id_owner", "firstName lastName email phone")
+      .lean();
+
+    const sponsors = rows.map((s: any) => {
+      const car = s.id_car && typeof s.id_car === "object" ? s.id_car : null;
+      const owner = s.id_owner && typeof s.id_owner === "object" ? s.id_owner : null;
+      return {
+        id: s._id.toString(),
+        id_car: car?._id?.toString() ?? String(s.id_car),
+        car: car
+          ? {
+              brand: car.brand,
+              model: car.model,
+              year: car.year,
+              status: car.status,
+            }
+          : null,
+        id_owner: owner?._id?.toString() ?? String(s.id_owner),
+        owner: owner
+          ? {
+              firstName: owner.firstName,
+              lastName: owner.lastName,
+              email: owner.email,
+              phone: owner.phone,
+            }
+          : null,
+        start_date: s.start_date,
+        end_date: s.end_date,
+        duration: s.duration,
+        price: s.price,
+        status: s.status,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+      };
+    });
+
+    return res.status(200).json({
+      ok: true,
+      sponsors,
+      count: sponsors.length,
+    });
+  } catch (error: any) {
+    console.error("Error listing sponsors:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la récupération des sponsors",
+    });
+  }
+});
+
+// —— Sponsor plans (abonnement_sponsor catalog) ——
+const sponsorPlanSchema = Joi.object({
+  duration: Joi.number().integer().min(1).max(365).required().messages({
+    "any.required": "La durée est requise",
+    "number.min": "La durée doit être d'au moins 1 jour",
+    "number.max": "La durée ne peut pas dépasser 365 jours",
+  }),
+  price: Joi.number().min(0).required().messages({
+    "any.required": "Le prix est requis",
+    "number.min": "Le prix ne peut pas être négatif",
+  }),
+});
+
+router.get("/sponsor-plans", authenticateToken, requireAdmin, async (_req: Request, res: Response) => {
+  try {
+    const plans = await AbonnementSponsor.find().sort({ duration: 1, price: 1 }).lean();
+    return res.status(200).json({
+      ok: true,
+      plans: plans.map((p: any) => ({
+        id: p._id.toString(),
+        duration: p.duration,
+        price: p.price,
+        createdAt: p.createdAt,
+        updatedAt: p.updatedAt,
+      })),
+    });
+  } catch (error: any) {
+    console.error("Error listing sponsor plans:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la récupération des plans de sponsor",
+    });
+  }
+});
+
+router.post("/sponsor-plans", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { error, value } = sponsorPlanSchema.validate(req.body, { abortEarly: false });
+    if (error) {
+      return res.status(400).json({
+        ok: false,
+        message: error.details.map((d) => d.message).join(", "),
+      });
+    }
+    const plan = await AbonnementSponsor.create({
+      duration: value.duration,
+      price: value.price,
+    });
+    return res.status(201).json({
+      ok: true,
+      plan: {
+        id: plan._id.toString(),
+        duration: plan.duration,
+        price: plan.price,
+        createdAt: plan.createdAt,
+        updatedAt: plan.updatedAt,
+      },
+    });
+  } catch (error: any) {
+    console.error("Error creating sponsor plan:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la création du plan de sponsor",
+    });
+  }
+});
+
+router.patch("/sponsor-plans/:id", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ ok: false, message: "Identifiant invalide" });
+    }
+    const { error, value } = sponsorPlanSchema.validate(req.body, { abortEarly: false });
+    if (error) {
+      return res.status(400).json({
+        ok: false,
+        message: error.details.map((d) => d.message).join(", "),
+      });
+    }
+    const plan = await AbonnementSponsor.findByIdAndUpdate(
+      id,
+      { $set: { duration: value.duration, price: value.price } },
+      { new: true, runValidators: true }
+    );
+    if (!plan) {
+      return res.status(404).json({ ok: false, message: "Plan introuvable" });
+    }
+    return res.status(200).json({
+      ok: true,
+      plan: {
+        id: plan._id.toString(),
+        duration: plan.duration,
+        price: plan.price,
+        createdAt: plan.createdAt,
+        updatedAt: plan.updatedAt,
+      },
+    });
+  } catch (error: any) {
+    console.error("Error updating sponsor plan:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la mise à jour du plan de sponsor",
+    });
+  }
+});
+
+router.delete("/sponsor-plans/:id", authenticateToken, requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ ok: false, message: "Identifiant invalide" });
+    }
+    const deleted = await AbonnementSponsor.findByIdAndDelete(id);
+    if (!deleted) {
+      return res.status(404).json({ ok: false, message: "Plan introuvable" });
+    }
+    return res.status(200).json({ ok: true, message: "Plan supprimé" });
+  } catch (error: any) {
+    console.error("Error deleting sponsor plan:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Erreur lors de la suppression du plan de sponsor",
     });
   }
 });

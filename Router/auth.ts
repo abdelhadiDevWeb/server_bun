@@ -220,7 +220,24 @@ router.post("/register/user", authRateLimiter, validate(validationSchemas.regist
 router.post("/register/workshop", authRateLimiter, validate(validationSchemas.registerWorkshop), async (req: Request, res: Response) => {
   try {
     // Body is already validated and sanitized by Joi middleware
-    const { name, email, adr, phone, type, password } = req.body;
+    const {
+      name,
+      email,
+      adr,
+      phone,
+      type,
+      password,
+      locationLat,
+      locationLng,
+      locationFormattedAddress,
+      googlePlaceId,
+      locationCity,
+      locationRegion,
+      locationPostalCode,
+      locationCountry,
+      locationNeighborhood,
+      locationStreetLine,
+    } = req.body;
 
     if (!name || !email || !adr || !phone || !password) {
       return res.status(400).json({
@@ -280,6 +297,16 @@ router.post("/register/workshop", authRateLimiter, validate(validationSchemas.re
       phone,
       type,
       password: hashed,
+      locationLat,
+      locationLng,
+      locationFormattedAddress: locationFormattedAddress ?? null,
+      googlePlaceId: googlePlaceId ?? null,
+      locationCity: locationCity ?? null,
+      locationRegion: locationRegion ?? null,
+      locationPostalCode: locationPostalCode ?? null,
+      locationCountry: locationCountry ?? null,
+      locationNeighborhood: locationNeighborhood ?? null,
+      locationStreetLine: locationStreetLine ?? null,
       // status/verfie default false
     });
 
@@ -992,6 +1019,13 @@ router.get("/me", authenticateToken, async (req: Request, res: Response) => {
           role: user.role,
           certifie: user.certifie,
           type: "user",
+          locationLat: (user as any).locationLat ?? null,
+          locationLng: (user as any).locationLng ?? null,
+          locationFormattedAddress: (user as any).locationFormattedAddress ?? null,
+          locationRegion: (user as any).locationRegion ?? null,
+          locationCity: (user as any).locationCity ?? null,
+          locationCountry: (user as any).locationCountry ?? null,
+          createdAt: user.createdAt ?? null,
         },
       });
     } else if (userType === "workshop") {
@@ -1017,6 +1051,17 @@ router.get("/me", authenticateToken, async (req: Request, res: Response) => {
           certifie: workshop.certifie,
           price_visit_mec: workshop.price_visit_mec,
           price_visit_paint: workshop.price_visit_paint,
+          locationLat: workshop.locationLat ?? null,
+          locationLng: workshop.locationLng ?? null,
+          locationFormattedAddress: workshop.locationFormattedAddress ?? null,
+          googlePlaceId: workshop.googlePlaceId ?? null,
+          locationCity: workshop.locationCity ?? null,
+          locationRegion: workshop.locationRegion ?? null,
+          locationPostalCode: workshop.locationPostalCode ?? null,
+          locationCountry: workshop.locationCountry ?? null,
+          locationNeighborhood: workshop.locationNeighborhood ?? null,
+          locationStreetLine: workshop.locationStreetLine ?? null,
+          createdAt: workshop.createdAt ?? null,
         },
       });
     }
@@ -1098,6 +1143,16 @@ const updateProfileSchema = Joi.object({
       "number.min": "Le prix de visite peinture doit être positif ou nul",
       "number.base": "Le prix de visite peinture doit être un nombre",
     }),
+  locationLat: Joi.number().min(-90).max(90).optional().allow(null),
+  locationLng: Joi.number().min(-180).max(180).optional().allow(null),
+  locationFormattedAddress: Joi.string().trim().max(500).optional().allow(null, ""),
+  googlePlaceId: Joi.string().trim().max(255).optional().allow(null, ""),
+  locationCity: Joi.string().trim().max(120).optional().allow(null, ""),
+  locationRegion: Joi.string().trim().max(120).optional().allow(null, ""),
+  locationPostalCode: Joi.string().trim().max(32).optional().allow(null, ""),
+  locationCountry: Joi.string().trim().max(120).optional().allow(null, ""),
+  locationNeighborhood: Joi.string().trim().max(200).optional().allow(null, ""),
+  locationStreetLine: Joi.string().trim().max(300).optional().allow(null, ""),
   // Email cannot be changed
 });
 
@@ -1130,6 +1185,42 @@ router.put(
         if (req.body.firstName) user.firstName = req.body.firstName;
         if (req.body.lastName) user.lastName = req.body.lastName;
         if (req.body.phone) user.phone = req.body.phone;
+        if (req.body.locationLat !== undefined) {
+          (user as any).locationLat =
+            req.body.locationLat === null || req.body.locationLat === ""
+              ? null
+              : Number(req.body.locationLat);
+        }
+        if (req.body.locationLng !== undefined) {
+          (user as any).locationLng =
+            req.body.locationLng === null || req.body.locationLng === ""
+              ? null
+              : Number(req.body.locationLng);
+        }
+        if (req.body.locationFormattedAddress !== undefined) {
+          (user as any).locationFormattedAddress =
+            req.body.locationFormattedAddress === null || req.body.locationFormattedAddress === ""
+              ? null
+              : String(req.body.locationFormattedAddress).trim();
+        }
+        if (req.body.locationRegion !== undefined) {
+          (user as any).locationRegion =
+            req.body.locationRegion === null || req.body.locationRegion === ""
+              ? null
+              : String(req.body.locationRegion).trim();
+        }
+        if (req.body.locationCity !== undefined) {
+          (user as any).locationCity =
+            req.body.locationCity === null || req.body.locationCity === ""
+              ? null
+              : String(req.body.locationCity).trim();
+        }
+        if (req.body.locationCountry !== undefined) {
+          (user as any).locationCountry =
+            req.body.locationCountry === null || req.body.locationCountry === ""
+              ? null
+              : String(req.body.locationCountry).trim();
+        }
 
         await user.save();
 
@@ -1146,6 +1237,12 @@ router.put(
             role: user.role,
             certifie: user.certifie,
             type: "user",
+            locationLat: (user as any).locationLat ?? null,
+            locationLng: (user as any).locationLng ?? null,
+            locationFormattedAddress: (user as any).locationFormattedAddress ?? null,
+            locationRegion: (user as any).locationRegion ?? null,
+            locationCity: (user as any).locationCity ?? null,
+            locationCountry: (user as any).locationCountry ?? null,
           },
         });
       } else if (userType === "workshop") {
@@ -1167,6 +1264,62 @@ router.put(
         if (req.body.price_visit_paint !== undefined) {
           workshop.price_visit_paint = req.body.price_visit_paint === null || req.body.price_visit_paint === '' ? null : Number(req.body.price_visit_paint);
         }
+        if (req.body.locationLat !== undefined) {
+          workshop.locationLat =
+            req.body.locationLat === null || req.body.locationLat === "" ? null : Number(req.body.locationLat);
+        }
+        if (req.body.locationLng !== undefined) {
+          workshop.locationLng =
+            req.body.locationLng === null || req.body.locationLng === "" ? null : Number(req.body.locationLng);
+        }
+        if (req.body.locationFormattedAddress !== undefined) {
+          workshop.locationFormattedAddress =
+            req.body.locationFormattedAddress === null || req.body.locationFormattedAddress === ""
+              ? null
+              : String(req.body.locationFormattedAddress).trim();
+        }
+        if (req.body.googlePlaceId !== undefined) {
+          workshop.googlePlaceId =
+            req.body.googlePlaceId === null || req.body.googlePlaceId === ""
+              ? null
+              : String(req.body.googlePlaceId).trim();
+        }
+        if (req.body.locationCity !== undefined) {
+          workshop.locationCity =
+            req.body.locationCity === null || req.body.locationCity === ""
+              ? null
+              : String(req.body.locationCity).trim();
+        }
+        if (req.body.locationRegion !== undefined) {
+          workshop.locationRegion =
+            req.body.locationRegion === null || req.body.locationRegion === ""
+              ? null
+              : String(req.body.locationRegion).trim();
+        }
+        if (req.body.locationPostalCode !== undefined) {
+          workshop.locationPostalCode =
+            req.body.locationPostalCode === null || req.body.locationPostalCode === ""
+              ? null
+              : String(req.body.locationPostalCode).trim();
+        }
+        if (req.body.locationCountry !== undefined) {
+          workshop.locationCountry =
+            req.body.locationCountry === null || req.body.locationCountry === ""
+              ? null
+              : String(req.body.locationCountry).trim();
+        }
+        if (req.body.locationNeighborhood !== undefined) {
+          workshop.locationNeighborhood =
+            req.body.locationNeighborhood === null || req.body.locationNeighborhood === ""
+              ? null
+              : String(req.body.locationNeighborhood).trim();
+        }
+        if (req.body.locationStreetLine !== undefined) {
+          workshop.locationStreetLine =
+            req.body.locationStreetLine === null || req.body.locationStreetLine === ""
+              ? null
+              : String(req.body.locationStreetLine).trim();
+        }
 
         await workshop.save();
 
@@ -1182,6 +1335,16 @@ router.put(
             status: workshop.status,
             price_visit_mec: workshop.price_visit_mec,
             price_visit_paint: workshop.price_visit_paint,
+            locationLat: workshop.locationLat ?? null,
+            locationLng: workshop.locationLng ?? null,
+            locationFormattedAddress: workshop.locationFormattedAddress ?? null,
+            googlePlaceId: workshop.googlePlaceId ?? null,
+            locationCity: workshop.locationCity ?? null,
+            locationRegion: workshop.locationRegion ?? null,
+            locationPostalCode: workshop.locationPostalCode ?? null,
+            locationCountry: workshop.locationCountry ?? null,
+            locationNeighborhood: workshop.locationNeighborhood ?? null,
+            locationStreetLine: workshop.locationStreetLine ?? null,
             certifie: workshop.certifie,
             type: "workshop",
             workshopType: workshop.type,
