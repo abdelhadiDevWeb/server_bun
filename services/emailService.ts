@@ -58,14 +58,20 @@ const isRenderHost =
   normalizeEnv(process.env.RENDER).toLowerCase() === "true" ||
   Boolean(normalizeEnv(process.env.RENDER_SERVICE_NAME));
 
+const smtpAllowedOnRender =
+  normalizeEnv(process.env.SMTP_ALLOW_ON_RENDER).toLowerCase() === "true";
+
 const useSmtp =
   EMAIL_PROVIDER !== "resend" &&
+  (!isRenderHost || smtpAllowedOnRender) &&
   (EMAIL_PROVIDER === "smtp" ||
     EMAIL_PROVIDER === "nodemailer" ||
     (smtpConfigured && !RESEND_API_KEY));
 
 /** When SMTP fails but Resend is configured, retry via API (fixes Render SMTP timeouts). */
 const canFallbackToResend = Boolean(RESEND_API_KEY);
+
+const renderBlocksSmtp = isRenderHost && !smtpAllowedOnRender && !useSmtp;
 
 const passwordResetHtmlTemplate = (code: string): string => `
   <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9fafb;">
@@ -175,6 +181,11 @@ if (useSmtp && smtpConfigured) {
       ? "✅ Email provider: Resend (recommended for Render)."
       : "✅ Email provider: Resend."
   );
+} else if (renderBlocksSmtp) {
+  console.error(
+    "❌ Render blocks SMTP (465/587). Set RESEND_API_KEY + EMAIL_PROVIDER=resend in Render Environment. " +
+      "SMTP on Render only if your host allows it: SMTP_ALLOW_ON_RENDER=true."
+  );
 } else {
   console.warn(
     "⚠️ No email provider: set SMTP_* + EMAIL_PROVIDER=smtp, or RESEND_API_KEY for Resend."
@@ -199,8 +210,8 @@ const sendWithSmtp = async (
       tls: {
         minVersion: "TLSv1.2" as const,
       },
-      connectionTimeout: 30_000,
-      greetingTimeout: 30_000,
+      connectionTimeout: isRenderHost ? 8_000 : 20_000,
+      greetingTimeout: isRenderHost ? 8_000 : 20_000,
       auth: {
         user: SMTP_USER,
         pass: SMTP_PASSWORD,
@@ -227,6 +238,12 @@ const sendWithSmtp = async (
 };
 
 const sendEmail = async (to: string, subject: string, html: string): Promise<boolean> => {
+  if (renderBlocksSmtp && !canFallbackToResend) {
+    console.error(
+      "❌ Cannot send email on Render without Resend. Add RESEND_API_KEY and EMAIL_PROVIDER=resend."
+    );
+    return false;
+  }
   if (useSmtp && smtpConfigured) {
     const smtpOk = await sendWithSmtp(to, subject, html);
     if (smtpOk) return true;

@@ -186,21 +186,21 @@ router.post("/register/user", authRateLimiter, validate(validationSchemas.regist
       console.log(`✅ Code saved correctly: "${cleanCode}"`);
     }
 
-    // Run side-effects in background so registration response is never blocked.
-    void (async () => {
-      try {
-        console.log(`📨 [register/user] Sending verification email to ${email}...`);
-        const emailSent = await sendVerificationEmail(email, cleanCode);
-        if (!emailSent) {
-          console.error("Failed to send verification email to:", email);
+    console.log(`📨 [register/user] Sending verification email to ${email}...`);
+    let verificationEmailSent = false;
+    try {
+      verificationEmailSent = await sendVerificationEmail(email, cleanCode);
+      if (!verificationEmailSent) {
+        console.error("Failed to send verification email to:", email);
+        if (process.env.NODE_ENV !== "production") {
           console.log("⚠️  Verification code (for testing):", cleanCode);
-        } else {
-          console.log(`✅ Verification email sent to: ${email} with code: ${cleanCode}`);
         }
-      } catch (e) {
-        console.error("Background sendVerificationEmail failed:", e);
+      } else {
+        console.log(`✅ Verification email sent to: ${email}`);
       }
-    })();
+    } catch (e) {
+      console.error("sendVerificationEmail failed:", e);
+    }
 
     void notifyAllAdmins(
       user._id.toString(),
@@ -212,7 +212,10 @@ router.post("/register/user", authRateLimiter, validate(validationSchemas.regist
     return res.status(201).json({
       ok: true,
       user: user.toJSON(),
-      message: "Compte créé. Vérifiez votre email pour le code de confirmation.",
+      verificationEmailSent,
+      message: verificationEmailSent
+        ? "Compte créé. Vérifiez votre email pour le code de confirmation."
+        : "Compte créé mais l'email de confirmation n'a pas pu être envoyé. Utilisez « Renvoyer le code » depuis la page de connexion.",
     });
   } catch (err: any) {
     return res.status(500).json({ ok: false, message: err?.message ?? "Server error" });
@@ -336,21 +339,21 @@ router.post("/register/workshop", authRateLimiter, validate(validationSchemas.re
       console.log(`✅ Code saved correctly: "${cleanCode}"`);
     }
 
-    // Run side-effects in background so registration response is never blocked.
-    void (async () => {
-      try {
-        console.log(`📨 [register/workshop] Sending verification email to ${email}...`);
-        const emailSent = await sendVerificationEmail(email, cleanCode);
-        if (!emailSent) {
-          console.error("Failed to send verification email to:", email);
+    console.log(`📨 [register/workshop] Sending verification email to ${email}...`);
+    let verificationEmailSent = false;
+    try {
+      verificationEmailSent = await sendVerificationEmail(email, cleanCode);
+      if (!verificationEmailSent) {
+        console.error("Failed to send verification email to:", email);
+        if (process.env.NODE_ENV !== "production") {
           console.log("⚠️  Verification code (for testing):", cleanCode);
-        } else {
-          console.log(`✅ Verification email sent to: ${email} with code: ${cleanCode}`);
         }
-      } catch (e) {
-        console.error("Background sendVerificationEmail failed:", e);
+      } else {
+        console.log(`✅ Verification email sent to: ${email}`);
       }
-    })();
+    } catch (e) {
+      console.error("sendVerificationEmail failed:", e);
+    }
 
     void notifyAllAdmins(
       workshop._id.toString(),
@@ -362,7 +365,10 @@ router.post("/register/workshop", authRateLimiter, validate(validationSchemas.re
     return res.status(201).json({
       ok: true,
       workshop: workshop.toJSON(),
-      message: "Compte créé. Vérifiez votre email pour le code de confirmation.",
+      verificationEmailSent,
+      message: verificationEmailSent
+        ? "Compte créé. Vérifiez votre email pour le code de confirmation."
+        : "Compte créé mais l'email de confirmation n'a pas pu être envoyé. Utilisez « Renvoyer le code » depuis la page de connexion.",
     });
   } catch (err: any) {
     return res.status(500).json({ ok: false, message: err?.message ?? "Server error" });
