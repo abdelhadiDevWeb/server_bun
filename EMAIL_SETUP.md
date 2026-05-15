@@ -48,6 +48,39 @@ Dans un fichier `.env`, **`#` commence souvent un commentaire** : tout ce qui su
 - Préférez : `SMTP_PASSWORD='(votre_mot_de_passe_avec#caractères)'` (guillemets simples, **sans** espaces autour du `=`).
 - Ou utilisez le base64 UTF-8 du mot de passe : `SMTP_PASSWORD_B64=KHV0Zi04...` (voir logs avec `DEBUG_SMTP=true` pour vérifier la longueur chargée).
 
+## Déploiement sur Render (Connection timeout SMTP)
+
+Sur **Render**, les ports SMTP sortants (**465**, **587**, **25**) sont souvent **bloqués**. Vous verrez alors :
+
+```text
+❌ SMTP send error: Connection timeout
+⚠️  Verification code (for testing): 123456
+```
+
+**Solution recommandée : utiliser Resend (API HTTPS, pas de port SMTP)**
+
+1. Créez un compte sur [resend.com](https://resend.com) et une clé API.
+2. Vérifiez un domaine (ou utilisez `onboarding@resend.dev` pour les tests).
+3. Dans **Render → votre service → Environment**, ajoutez :
+
+   ```env
+   EMAIL_PROVIDER=resend
+   RESEND_API_KEY=re_xxxxxxxx
+   RESEND_FROM=CarSure DZ <onboarding@resend.dev>
+   ```
+
+   (Remplacez par votre domaine vérifié en production, ex. `CarSure DZ <noreply@votredomaine.com>`.)
+
+4. **Ne pas** forcer SMTP sur Render (`EMAIL_PROVIDER=smtp` + `mail.noteasy.work`) sauf si votre hébergeur autorise explicitement le SMTP depuis Render.
+
+5. Redéployez le service.
+
+Si `RESEND_API_KEY` est défini, le serveur peut **réessayer automatiquement via Resend** lorsque SMTP échoue (timeout).
+
+## Message « No active admins to notify »
+
+Ce message est **indépendant** de l’email utilisateur. À l’inscription, le serveur cherche un admin actif (`role: admin`, `status: true`) pour une notification interne. S’il n’y en a pas en base production, le log s’affiche mais **l’inscription continue**. Créez un compte admin en production ou ignorez ce log.
+
 ## Test
 
 Après configuration, testez l'inscription. Si l'email fonctionne, vous verrez :

@@ -53,10 +53,19 @@ const EMAIL_PROVIDER = normalizeEnv(process.env.EMAIL_PROVIDER).toLowerCase();
 const smtpConfigured =
   Boolean(SMTP_HOST && SMTP_USER && SMTP_PASSWORD);
 
+/** Render and many PaaS block outbound SMTP (465/587) — use Resend (HTTPS) in production. */
+const isRenderHost =
+  normalizeEnv(process.env.RENDER).toLowerCase() === "true" ||
+  Boolean(normalizeEnv(process.env.RENDER_SERVICE_NAME));
+
 const useSmtp =
-  EMAIL_PROVIDER === "smtp" ||
-  EMAIL_PROVIDER === "nodemailer" ||
-  (smtpConfigured && EMAIL_PROVIDER !== "resend");
+  EMAIL_PROVIDER !== "resend" &&
+  (EMAIL_PROVIDER === "smtp" ||
+    EMAIL_PROVIDER === "nodemailer" ||
+    (smtpConfigured && !RESEND_API_KEY));
+
+/** When SMTP fails but Resend is configured, retry via API (fixes Render SMTP timeouts). */
+const canFallbackToResend = Boolean(RESEND_API_KEY);
 
 const passwordResetHtmlTemplate = (code: string): string => `
   <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9fafb;">
@@ -149,13 +158,23 @@ const sendWithResend = async (
 
 if (useSmtp && smtpConfigured) {
   console.log(`✅ Email provider: SMTP (${SMTP_HOST}:${SMTP_PORT}, secure=${SMTP_SECURE}).`);
+  if (isRenderHost) {
+    console.warn(
+      "⚠️  Running on Render: outbound SMTP (465/587) is often blocked → Connection timeout. " +
+        "Set EMAIL_PROVIDER=resend and RESEND_API_KEY in Render Environment (recommended)."
+    );
+  }
   if (normalizeEnv(process.env.DEBUG_SMTP).toLowerCase() === "true") {
     console.log(
       `[DEBUG_SMTP] auth user=${SMTP_USER} passwordLength=${SMTP_PASSWORD.length} (if too short, check .env: # truncates unquoted values; use single quotes or SMTP_PASSWORD_B64)`
     );
   }
 } else if (RESEND_API_KEY) {
-  console.log("✅ Email provider set to Resend.");
+  console.log(
+    isRenderHost
+      ? "✅ Email provider: Resend (recommended for Render)."
+      : "✅ Email provider: Resend."
+  );
 } else {
   console.warn(
     "⚠️ No email provider: set SMTP_* + EMAIL_PROVIDER=smtp, or RESEND_API_KEY for Resend."
@@ -207,6 +226,19 @@ const sendWithSmtp = async (
   }
 };
 
+const sendEmail = async (to: string, subject: string, html: string): Promise<boolean> => {
+  if (useSmtp && smtpConfigured) {
+    const smtpOk = await sendWithSmtp(to, subject, html);
+    if (smtpOk) return true;
+    if (canFallbackToResend) {
+      console.warn("⚠️  SMTP failed — retrying with Resend API...");
+      return sendWithResend(to, subject, html);
+    }
+    return false;
+  }
+  return sendWithResend(to, subject, html);
+};
+
 export const sendVerificationEmail = async (to: string, code: string): Promise<boolean> => {
   const normalizedTo = normalizeEnv(to).toLowerCase();
   if (!normalizedTo) {
@@ -215,14 +247,10 @@ export const sendVerificationEmail = async (to: string, code: string): Promise<b
   }
   if (useSmtp && smtpConfigured) {
     console.log("📧 Sending verification email via SMTP...");
-    return sendWithSmtp(
-      normalizedTo,
-      "Confirmation de votre email - CarSure DZ",
-      htmlTemplate(code)
-    );
+  } else {
+    console.log("📧 Sending verification email via Resend...");
   }
-  console.log("📧 Sending verification email with Resend...");
-  return sendWithResend(
+  return sendEmail(
     normalizedTo,
     "Confirmation de votre email - CarSure DZ",
     htmlTemplate(code)
@@ -237,14 +265,10 @@ export const sendPasswordResetEmail = async (to: string, code: string): Promise<
   }
   if (useSmtp && smtpConfigured) {
     console.log("📧 Sending password reset email via SMTP...");
-    return sendWithSmtp(
-      normalizedTo,
-      "Réinitialisation du mot de passe - CarSure DZ",
-      passwordResetHtmlTemplate(code)
-    );
+  } else {
+    console.log("📧 Sending password reset email via Resend...");
   }
-  console.log("📧 Sending password reset email with Resend...");
-  return sendWithResend(
+  return sendEmail(
     normalizedTo,
     "Réinitialisation du mot de passe - CarSure DZ",
     passwordResetHtmlTemplate(code)
