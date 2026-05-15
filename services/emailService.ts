@@ -58,20 +58,19 @@ const isRenderHost =
   normalizeEnv(process.env.RENDER).toLowerCase() === "true" ||
   Boolean(normalizeEnv(process.env.RENDER_SERVICE_NAME));
 
-const smtpAllowedOnRender =
-  normalizeEnv(process.env.SMTP_ALLOW_ON_RENDER).toLowerCase() === "true";
+/** When EMAIL_PROVIDER=smtp, always use mail.noteasy.work (or your SMTP_*), never Resend. */
+const smtpOnly =
+  EMAIL_PROVIDER === "smtp" || EMAIL_PROVIDER === "nodemailer";
 
 const useSmtp =
-  EMAIL_PROVIDER !== "resend" &&
-  (!isRenderHost || smtpAllowedOnRender) &&
-  (EMAIL_PROVIDER === "smtp" ||
-    EMAIL_PROVIDER === "nodemailer" ||
-    (smtpConfigured && !RESEND_API_KEY));
+  EMAIL_PROVIDER === "resend"
+    ? false
+    : smtpOnly
+      ? smtpConfigured
+      : smtpConfigured && !RESEND_API_KEY;
 
-/** When SMTP fails but Resend is configured, retry via API (fixes Render SMTP timeouts). */
-const canFallbackToResend = Boolean(RESEND_API_KEY);
-
-const renderBlocksSmtp = isRenderHost && !smtpAllowedOnRender && !useSmtp;
+/** Optional fallback if SMTP fails and provider is not explicitly smtp-only. */
+const canFallbackToResend = Boolean(RESEND_API_KEY) && !smtpOnly;
 
 const passwordResetHtmlTemplate = (code: string): string => `
   <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9fafb;">
@@ -178,13 +177,8 @@ if (useSmtp && smtpConfigured) {
 } else if (RESEND_API_KEY) {
   console.log(
     isRenderHost
-      ? "✅ Email provider: Resend (recommended for Render)."
+      ? "✅ Email provider: Resend."
       : "✅ Email provider: Resend."
-  );
-} else if (renderBlocksSmtp) {
-  console.error(
-    "❌ Render blocks SMTP (465/587). Set RESEND_API_KEY + EMAIL_PROVIDER=resend in Render Environment. " +
-      "SMTP on Render only if your host allows it: SMTP_ALLOW_ON_RENDER=true."
   );
 } else {
   console.warn(
@@ -232,18 +226,16 @@ const sendWithSmtp = async (
       console.error(
         "   Hint (535): Wrong SMTP credentials or mailbox password. If SMTP_PASSWORD contains # use single quotes in .env: SMTP_PASSWORD='...' or SMTP_PASSWORD_B64=... For Gmail use an App Password (not your Google account password)."
       );
+    } else if (isRenderHost && /timeout|ETIMEDOUT|ECONNREFUSED/i.test(msg)) {
+      console.error(
+        "   Hint: Render often blocks outbound SMTP (ports 465/587). Your noteasy.work SMTP works locally but may not from Render. Options: use Resend (HTTPS), or host the API on a VPS that allows SMTP."
+      );
     }
     return false;
   }
 };
 
 const sendEmail = async (to: string, subject: string, html: string): Promise<boolean> => {
-  if (renderBlocksSmtp && !canFallbackToResend) {
-    console.error(
-      "❌ Cannot send email on Render without Resend. Add RESEND_API_KEY and EMAIL_PROVIDER=resend."
-    );
-    return false;
-  }
   if (useSmtp && smtpConfigured) {
     const smtpOk = await sendWithSmtp(to, subject, html);
     if (smtpOk) return true;
@@ -251,6 +243,10 @@ const sendEmail = async (to: string, subject: string, html: string): Promise<boo
       console.warn("⚠️  SMTP failed — retrying with Resend API...");
       return sendWithResend(to, subject, html);
     }
+    return false;
+  }
+  if (!RESEND_API_KEY) {
+    console.error("❌ No email provider: set SMTP_* with EMAIL_PROVIDER=smtp, or RESEND_API_KEY.");
     return false;
   }
   return sendWithResend(to, subject, html);
