@@ -1,27 +1,39 @@
 import pino from 'pino';
 import { randomUUID } from 'crypto';
+import os from 'node:os';
 import type { Request, Response, NextFunction } from 'express';
 
-const NODE_ENV = process.env.NODE_ENV || 'development';
+/** Only explicit `NODE_ENV=development` enables pretty logs (cPanel often leaves NODE_ENV unset). */
+const isDevelopment = process.env.NODE_ENV === 'development';
+const isProduction = process.env.NODE_ENV === 'production';
+const usePrettyTransport =
+  isDevelopment &&
+  process.env.LOG_PRETTY !== 'false' &&
+  process.env.DISABLE_PINO_PRETTY !== 'true';
+
+const logLevel =
+  process.env.LOG_LEVEL ?? (isProduction || !isDevelopment ? 'info' : 'debug');
 
 // Create base logger instance
 export const logger = pino({
-  level: NODE_ENV === 'production' ? 'info' : 'debug',
-  
-  // Pretty print in development, JSON in production
-  transport: NODE_ENV === 'development' ? {
-    target: 'pino-pretty',
-    options: {
-      colorize: true,
-      translateTime: 'SYS:yyyy-mm-dd HH:MM:ss',
-      ignore: 'pid,hostname',
-    },
-  } : undefined,
-  
+  level: logLevel,
+
+  // Pretty print only in local dev (pino-pretty is devDependency; not on cPanel prod)
+  transport: usePrettyTransport
+    ? {
+        target: 'pino-pretty',
+        options: {
+          colorize: true,
+          translateTime: 'SYS:yyyy-mm-dd HH:MM:ss',
+          ignore: 'pid,hostname',
+        },
+      }
+    : undefined,
+
   // Base fields for all logs
   base: {
     pid: process.pid,
-    hostname: process.env.HOSTNAME || require('os').hostname(),
+    hostname: process.env.HOSTNAME || os.hostname(),
     service: 'cars-backend',
     version: process.env.npm_package_version || '1.0.0',
   },

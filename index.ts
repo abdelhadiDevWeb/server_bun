@@ -16,6 +16,7 @@ import {
 import { connectDatabase } from "./Database/Mongoose";
 import { AppConfig, ValidatAppConfig } from "./config/app.config";
 import Allversion from "./Router/index";
+import { handleChargilySponsorWebhook } from "./Router/sponsor";
 import crypto from 'crypto'
 import  {type Request , type Response , type NextFunction}  from 'express'
 import cookieParser from 'cookie-parser'
@@ -24,7 +25,13 @@ import cors, { type CorsOptions } from "cors";
 import path from 'path'
 import { Server as SocketIOServer } from 'socket.io'
 import { createAdapter } from '@socket.io/redis-adapter'
-import { connectRedis, redisPubClient, redisSubClient, disconnectRedis } from "./config/redis";
+import {
+  connectRedis,
+  redisPubClient,
+  redisSubClient,
+  disconnectRedis,
+  isRedisEnabled,
+} from "./config/redis";
 import { EventCoalescingManager } from "./utils/messageIdempotency";
  
 
@@ -153,6 +160,18 @@ app.use('/uploads/video', express.static(path.join(uploadsRoot, 'video')));
 app.use('/uploads/users_images', express.static(path.join(uploadsRoot, 'users_images')));
 app.use('/uploads/rdv_images', express.static(path.join(uploadsRoot, 'rdv_images')));
 app.use('/uploads/rdv_pdf', express.static(path.join(uploadsRoot, 'rdv_pdf')));
+
+// Chargily webhook — MUST be registered before express.json() (HMAC needs raw body)
+app.post(
+  "/api/sponsor/webhook/chargily",
+  express.raw({ type: "application/json", limit: "1mb" }),
+  (req: Request, _res: Response, next: NextFunction) => {
+    (req as Request & { rawBody?: Buffer }).rawBody = req.body as Buffer;
+    next();
+  },
+  handleChargilySponsorWebhook
+);
+
 app.use(express.json({ limit: "100mb" }));
 app.use(express.urlencoded({extended:true , limit:'100mb'}))
 app.use(express.json());
@@ -251,19 +270,21 @@ Sentry?.setupExpressErrorHandler?.(app);
 // Health check endpoint
 app.get('/api/health', async (_req: Request, res: Response) => {
   const { checkRedisHealth } = await import('./config/redis');
-  
+  const redisOn = isRedisEnabled();
+
   const health = {
     ok: true,
     status: 'healthy',
     timestamp: new Date().toISOString(),
     services: {
-      redis: await checkRedisHealth(),
+      redisEnabled: redisOn,
+      redis: redisOn ? await checkRedisHealth() : null,
       socketAdapter: redisAdapterConfigured,
     }
   };
   
-  // Return 503 if Redis is down in production
-  if (process.env.NODE_ENV === 'production' && !health.services.redis) {
+  // Return 503 if Redis is required but down in production
+  if (redisOn && process.env.NODE_ENV === 'production' && !health.services.redis) {
     health.ok = false;
     health.status = 'degraded';
     return res.status(503).json(health);
@@ -380,32 +401,30 @@ ValidatAppConfig(async () => {
     // Connect to MongoDB
     await connectDatabase();
 
-    // Connect to Redis for caching and Socket.IO adapter
-    try {
-      await connectRedis();
-      
-      // Configure Socket.IO Redis adapter for horizontal scaling
-      if (redisPubClient.isOpen && redisSubClient.isOpen) {
-        const redisAdapter = createAdapter(redisPubClient, redisSubClient);
-        io.adapter(redisAdapter);
-        redisAdapterConfigured = true;
-        
-        logger.info({
-          msg: 'Socket.IO Redis adapter configured for horizontal scaling',
+    // Connect to Redis for caching and Socket.IO adapter (optional: REDIS_ENABLED=false)
+    if (isRedisEnabled()) {
+      try {
+        await connectRedis();
+
+        if (redisPubClient.isOpen && redisSubClient.isOpen) {
+          const redisAdapter = createAdapter(redisPubClient, redisSubClient);
+          io.adapter(redisAdapter);
+          redisAdapterConfigured = true;
+
+          logger.info({
+            msg: 'Socket.IO Redis adapter configured for horizontal scaling',
+          });
+        }
+      } catch (redisError) {
+        logger.warn({
+          error: redisError,
+          msg: 'Redis connection failed, continuing without Redis features',
         });
       }
-    } catch (redisError) {
-      logger.warn({
-        error: redisError,
-        msg: 'Redis connection failed, continuing without Redis features',
+    } else {
+      logger.info({
+        msg: 'Redis disabled via REDIS_ENABLED=false — in-memory Socket.IO, no cache layer',
       });
-      
-      // In production, you might want to fail here
-      if (process.env.NODE_ENV === 'production') {
-        logger.error({
-          msg: 'Redis is required in production for scaling',
-        });
-      }
     }
 
     // Run Server

@@ -5,6 +5,14 @@ import "dotenv/config";
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const NODE_ENV = process.env.NODE_ENV || 'development';
 
+/** Set `REDIS_ENABLED=false` in .env to run without Redis (cPanel / single instance). */
+export function isRedisEnabled(): boolean {
+  const flag = process.env.REDIS_ENABLED?.trim().toLowerCase();
+  if (flag === 'false' || flag === '0' || flag === 'no') return false;
+  if (flag === 'true' || flag === '1' || flag === 'yes') return true;
+  return true;
+}
+
 // Create Redis client
 export const redisClient = createClient({
   url: REDIS_URL,
@@ -81,6 +89,11 @@ redisSubClient.on('error', (err) => {
  * Connect to Redis
  */
 export async function connectRedis(): Promise<void> {
+  if (!isRedisEnabled()) {
+    logger.info({ msg: 'Redis disabled (REDIS_ENABLED=false), skipping connection' });
+    return;
+  }
+
   try {
     if (!redisClient.isOpen) {
       await redisClient.connect();
@@ -103,14 +116,12 @@ export async function connectRedis(): Promise<void> {
       msg: 'Failed to connect to Redis',
     });
     
-    // In development, continue without Redis
-    if (NODE_ENV === 'development') {
-      logger.warn({
-        msg: 'Continuing without Redis in development mode',
-      });
-    } else {
-      throw error;
-    }
+    logger.warn({
+      msg:
+        NODE_ENV === 'development'
+          ? 'Continuing without Redis in development mode'
+          : 'Continuing without Redis (connection failed)',
+    });
   }
 }
 
@@ -118,6 +129,8 @@ export async function connectRedis(): Promise<void> {
  * Disconnect from Redis
  */
 export async function disconnectRedis(): Promise<void> {
+  if (!isRedisEnabled()) return;
+
   try {
     const promises = [];
     
@@ -150,6 +163,8 @@ export async function disconnectRedis(): Promise<void> {
  * Check Redis connection health
  */
 export async function checkRedisHealth(): Promise<boolean> {
+  if (!isRedisEnabled()) return true;
+
   try {
     if (!redisClient.isOpen) {
       return false;
@@ -175,8 +190,7 @@ export class RedisCache {
    */
   static async set(key: string, value: any, ttlSeconds: number = 3600): Promise<void> {
     try {
-      if (!redisClient.isOpen) {
-        logger.warn('Redis not connected, skipping cache set');
+      if (!isRedisEnabled() || !redisClient.isOpen) {
         return;
       }
       
@@ -202,8 +216,7 @@ export class RedisCache {
    */
   static async get<T = any>(key: string): Promise<T | null> {
     try {
-      if (!redisClient.isOpen) {
-        logger.warn('Redis not connected, skipping cache get');
+      if (!isRedisEnabled() || !redisClient.isOpen) {
         return null;
       }
       
@@ -237,8 +250,7 @@ export class RedisCache {
    */
   static async del(key: string): Promise<void> {
     try {
-      if (!redisClient.isOpen) {
-        logger.warn('Redis not connected, skipping cache delete');
+      if (!isRedisEnabled() || !redisClient.isOpen) {
         return;
       }
       
@@ -262,7 +274,7 @@ export class RedisCache {
    */
   static async exists(key: string): Promise<boolean> {
     try {
-      if (!redisClient.isOpen) {
+      if (!isRedisEnabled() || !redisClient.isOpen) {
         return false;
       }
       

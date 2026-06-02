@@ -39,11 +39,30 @@ const SponsorSchema = new Schema(
     },
     status: {
       // true  = active sponsorship (within the date window)
-      // false = cancelled or expired
+      // false = cancelled, expired, or awaiting payment
       type: Boolean,
       required: true,
-      default: true,
+      default: false,
       index: true,
+    },
+    payment_status: {
+      type: String,
+      enum: ["pending", "paid", "failed", "cancelled"],
+      default: "pending",
+      index: true,
+    },
+    chargily_checkout_id: {
+      type: String,
+      default: null,
+      index: true,
+    },
+    chargily_checkout_url: {
+      type: String,
+      default: null,
+    },
+    paid_at: {
+      type: Date,
+      default: null,
     },
   },
   { timestamps: true }

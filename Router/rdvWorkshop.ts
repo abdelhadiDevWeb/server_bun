@@ -289,7 +289,7 @@ router.get(
       console.log('🔍 Fetching appointments for user:', userId, 'as ObjectId:', userIdObjectId);
 
       const appointments = await RendezVousWorkshop.find({ id_owner_car: userIdObjectId })
-        .populate('id_workshop', 'name email phone adr')
+        .populate('id_workshop', 'name email phone adr locationLat locationLng locationRegion')
         .populate('id_car', 'brand model year')
         .sort({ date: -1, time: -1 })
         .lean();
