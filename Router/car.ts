@@ -12,6 +12,8 @@ import { CachingService } from "../services/cachingService";
 import { logger } from "../utils/logger";
 import Joi from "joi";
 import mongoose from "mongoose";
+import fs from "fs";
+import path from "path";
 import "dotenv/config";
 
 const router = Router();
@@ -132,6 +134,49 @@ const createCarSchema = Joi.object({
     .messages({
       "string.max": "Le champ 'utilisé par' ne peut pas dépasser 100 caractères",
     }),
+  locationCommune: Joi.string()
+    .trim()
+    .min(2)
+    .max(120)
+    .required()
+    .messages({
+      "string.min": "La commune doit contenir au moins 2 caractères",
+      "string.max": "La commune ne peut pas dépasser 120 caractères",
+      "any.required": "La commune est requise",
+    }),
+  locationWilaya: Joi.string()
+    .trim()
+    .min(2)
+    .max(120)
+    .required()
+    .messages({
+      "string.min": "La wilaya doit contenir au moins 2 caractères",
+      "string.max": "La wilaya ne peut pas dépasser 120 caractères",
+      "any.required": "La wilaya est requise",
+    }),
+  locationDaira: Joi.string()
+    .trim()
+    .max(120)
+    .optional()
+    .allow(null, '')
+    .messages({
+      "string.max": "La daïra ne peut pas dépasser 120 caractères",
+    }),
+  locationLat: Joi.number()
+    .min(-90)
+    .max(90)
+    .optional()
+    .allow(null, ''),
+  locationLng: Joi.number()
+    .min(-180)
+    .max(180)
+    .optional()
+    .allow(null, ''),
+  locationFormattedAddress: Joi.string()
+    .trim()
+    .max(500)
+    .optional()
+    .allow(null, ''),
   // Status is not sent by user, it's set by admin/system
   // Default will be 'no_proccess' in the model
 });
@@ -421,7 +466,6 @@ router.post(
       if (error) {
         // Clean up uploaded files if validation fails
         if (req.files && Array.isArray(req.files)) {
-          const fs = require("fs");
           req.files.forEach((file: Express.Multer.File) => {
             if (fs.existsSync(file.path)) {
               try {
@@ -456,7 +500,6 @@ router.post(
         console.log("❌ Create car - No user ID found in request");
         // Clean up uploaded files
         if (req.files && Array.isArray(req.files)) {
-          const fs = require("fs");
           req.files.forEach((file: Express.Multer.File) => {
             if (fs.existsSync(file.path)) {
               try {
@@ -495,7 +538,6 @@ router.post(
           if (!bypassVin) {
             // Clean up uploaded files
             if (req.files && Array.isArray(req.files)) {
-              const fs = require("fs");
               req.files.forEach((file: Express.Multer.File) => {
                 if (fs.existsSync(file.path)) {
                   try {
@@ -563,7 +605,6 @@ router.post(
         .catch((err) => {
           // Clean up uploaded files if car creation fails
           if (req.files && Array.isArray(req.files)) {
-            const fs = require("fs");
             req.files.forEach((file: Express.Multer.File) => {
               if (fs.existsSync(file.path)) {
                 fs.unlinkSync(file.path);
@@ -580,7 +621,6 @@ router.post(
     } catch (err: any) {
       // Clean up uploaded files on error
       if (req.files && Array.isArray(req.files)) {
-        const fs = require("fs");
         req.files.forEach((file: Express.Multer.File) => {
           if (fs.existsSync(file.path)) {
             fs.unlinkSync(file.path);
@@ -701,9 +741,18 @@ async function attachActiveSponsors<T extends { _id?: any; id?: any }>(
   if (ids.length === 0) return cars as any;
 
   const now = new Date();
+
+  // Flip expired sponsors so they are not attached to public listings.
+  await Sponsor.updateMany(
+    { status: true, end_date: { $lte: now } },
+    { $set: { status: false } }
+  );
+
   const activeSponsors = await Sponsor.find({
     id_car: { $in: ids },
     status: true,
+    payment_status: "paid",
+    start_date: { $lte: now },
     end_date: { $gt: now },
   })
     .select("id_car start_date end_date duration price")
@@ -730,7 +779,41 @@ async function attachActiveSponsors<T extends { _id?: any; id?: any }>(
   }) as any;
 }
 
-// Get single car by ID (public endpoint) - must be after specific routes like /my-cars
+// Public: active listings for a seller (user profile page)
+router.get("/by-owner/:ownerId", async (req: Request, res: Response) => {
+  try {
+    const { ownerId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(ownerId)) {
+      return res.status(400).json({
+        ok: false,
+        message: "Identifiant vendeur invalide",
+      });
+    }
+
+    const cars = await Car.find({
+      owner: new mongoose.Types.ObjectId(ownerId),
+      status: { $nin: ["sold", "vendue"] },
+    })
+      .sort({ createdAt: -1 })
+      .select("brand model year km price status images createdAt")
+      .lean();
+
+    const list = cars.map((car) => ({
+      ...car,
+      id: car._id?.toString(),
+      _id: car._id?.toString(),
+    }));
+
+    return res.status(200).json({ ok: true, cars: list });
+  } catch (err: any) {
+    logger.error({ err, msg: "Error fetching cars by owner" });
+    return res.status(500).json({
+      ok: false,
+      message: err?.message ?? "Erreur serveur",
+    });
+  }
+});
+
 // Get all cars except sold (public endpoint) with optional search filters.
 // $nin covers legacy "vendue" values if any exist in older documents.
 router.get("/active", async (req: Request, res: Response) => {
@@ -750,10 +833,15 @@ router.get("/active", async (req: Request, res: Response) => {
       type_gaz,
       type_enegine,
       accident,
-      usedby
+      usedby,
+      ownerId,
     } = req.query;
 
     const query: any = { status: { $nin: ['sold', 'vendue'] } };
+
+    if (ownerId && typeof ownerId === "string" && mongoose.Types.ObjectId.isValid(ownerId)) {
+      query.owner = new mongoose.Types.ObjectId(ownerId);
+    }
 
     if (brand && typeof brand === 'string') {
       query.brand = { $regex: brand, $options: 'i' };
@@ -1167,7 +1255,6 @@ router.put(
       if (!car) {
         // Clean up uploaded files if car not found
         if (req.files && Array.isArray(req.files)) {
-          const fs = require("fs");
           req.files.forEach((file: Express.Multer.File) => {
             if (fs.existsSync(file.path)) {
               try {
@@ -1188,7 +1275,6 @@ router.put(
       if (car.owner.toString() !== userId) {
         // Clean up uploaded files if unauthorized
         if (req.files && Array.isArray(req.files)) {
-          const fs = require("fs");
           req.files.forEach((file: Express.Multer.File) => {
             if (fs.existsSync(file.path)) {
               try {
@@ -1207,8 +1293,6 @@ router.put(
 
       // Prepare update data
       let updateData: any = {};
-      const fs = require("fs");
-      const path = require("path");
 
       // Handle image updates
       let finalImages: string[] = [];
@@ -1287,7 +1371,6 @@ router.put(
       if (error) {
         // Clean up uploaded files if validation fails
         if (req.files && Array.isArray(req.files)) {
-          const fs = require("fs");
           req.files.forEach((file: Express.Multer.File) => {
             if (fs.existsSync(file.path)) {
               try {
@@ -1324,7 +1407,6 @@ router.put(
     } catch (err: any) {
       // Clean up uploaded files on error
       if (req.files && Array.isArray(req.files)) {
-        const fs = require("fs");
         req.files.forEach((file: Express.Multer.File) => {
           if (fs.existsSync(file.path)) {
             try {
@@ -1380,8 +1462,6 @@ router.delete(
 
       // Delete images from filesystem
       if (car.images && car.images.length > 0) {
-        const fs = require("fs");
-        const path = require("path");
         car.images.forEach((imagePath: string) => {
           const fullPath = path.join(process.cwd(), imagePath);
           if (fs.existsSync(fullPath)) {

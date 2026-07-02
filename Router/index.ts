@@ -42,6 +42,7 @@ router.use("/facture", factureRouter);
 router.use("/rate", rateRouter);
 router.use("/sponsor", sponsorRouter);
 router.use("/geocode", geocodeRouter);
+// media mounted in index.ts before rate limiter (avoids 429 on image resize)
 
 export default router;
 

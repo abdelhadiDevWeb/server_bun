@@ -9,6 +9,7 @@ import { authenticateToken } from "../middleware/auth.middleware";
 import {
   createChargilyCheckout,
   getChargilyCheckout,
+  getChargilyCheckoutPaymentStatus,
   getBackendPublicUrl,
   getFrontendBaseUrl,
   verifyChargilyWebhookSignature,
@@ -112,12 +113,56 @@ async function activateSponsorAfterPayment(
   return { ok: true, alreadyPaid: false };
 }
 
+/** Confirm payment with Chargily API, then activate only if checkout is paid. */
+async function syncSponsorPaymentFromChargily(
+  sponsorId: string
+): Promise<{ synced: boolean; paid: boolean }> {
+  const sponsor = await Sponsor.findById(sponsorId);
+  if (!sponsor || sponsor.price <= 0) {
+    return { synced: false, paid: sponsor?.payment_status === "paid" };
+  }
+  if (sponsor.payment_status === "paid" && sponsor.status === true) {
+    return { synced: true, paid: true };
+  }
+
+  const checkoutId = sponsor.chargily_checkout_id?.trim();
+  if (!checkoutId) {
+    return { synced: false, paid: false };
+  }
+
+  const checkout = await getChargilyCheckoutPaymentStatus(checkoutId);
+  if (!checkout) {
+    return { synced: false, paid: false };
+  }
+
+  const status = String(checkout.status || "").toLowerCase();
+  if (status === "paid") {
+    const result = await activateSponsorAfterPayment(sponsorId, checkout.id);
+    return { synced: true, paid: result.ok };
+  }
+
+  if (["failed", "canceled", "cancelled", "expired"].includes(status)) {
+    await Sponsor.findOneAndUpdate(
+      { _id: sponsorId, payment_status: { $ne: "paid" } },
+      {
+        $set: {
+          payment_status: status === "failed" ? "failed" : "cancelled",
+          status: false,
+        },
+      }
+    );
+    return { synced: true, paid: false };
+  }
+
+  return { synced: true, paid: false };
+}
+
 async function findBlockingSponsorForCar(carId: string) {
   const now = new Date();
   return Sponsor.findOne({
     id_car: carId,
     $or: [
-      { status: true, end_date: { $gt: now } },
+      { status: true, payment_status: "paid", end_date: { $gt: now } },
       { payment_status: "pending" },
     ],
   }).lean();
@@ -195,10 +240,11 @@ router.get("/sponsorable-cars", authenticateToken, async (req: Request, res: Res
       .filter((car: any) => {
         const carIdStr = car._id.toString();
         // Active sponsor = status:true AND end_date in the future.
-        const hasActive = (sponsors as SponsorLean[]).some(
+        const hasActive = (sponsors as (SponsorLean & { payment_status?: string })[]).some(
           (s) =>
             s.id_car.toString() === carIdStr &&
             s.status === true &&
+            s.payment_status === "paid" &&
             s.end_date &&
             new Date(s.end_date).getTime() > now
         );
@@ -328,23 +374,28 @@ router.post("/create", authenticateToken, async (req: Request, res: Response) =>
       });
     }
 
-    const startDate = start_date ? new Date(start_date) : new Date();
-    const endDate = new Date(startDate.getTime() + duration * DAY_MS);
+    const now = new Date();
+    const requiresPayment = price > 0;
 
     const sponsor = new Sponsor({
       id_car,
       id_owner: userId,
-      start_date: startDate,
-      end_date: endDate,
+      // Dates are set when payment is confirmed (or immediately for free sponsors).
+      start_date: requiresPayment ? now : start_date ? new Date(start_date) : now,
+      end_date: requiresPayment
+        ? now
+        : new Date((start_date ? new Date(start_date) : now).getTime() + duration * DAY_MS),
       duration,
       price,
       status: false,
-      payment_status: price > 0 ? "pending" : "paid",
-      paid_at: price > 0 ? null : new Date(),
+      payment_status: requiresPayment ? "pending" : "paid",
+      paid_at: requiresPayment ? null : now,
     });
 
-    if (price <= 0) {
+    if (!requiresPayment) {
       sponsor.status = true;
+      sponsor.start_date = start_date ? new Date(start_date) : now;
+      sponsor.end_date = new Date(sponsor.start_date.getTime() + duration * DAY_MS);
     }
 
     await sponsor.save();
@@ -436,7 +487,7 @@ router.post("/payment/create-checkout", authenticateToken, async (req: Request, 
       };
     };
 
-    const defaultPath = "/dashboard-seller/my-cars";
+    const defaultPath = "/dashboard-seller/my-cars?filter=sponsor";
     let successUrl: string;
     let failureUrl: string;
 
@@ -547,19 +598,32 @@ router.get("/payment/status/:id", authenticateToken, async (req: Request, res: R
       return res.status(400).json({ ok: false, message: "id invalide" });
     }
 
-    const sponsor = await Sponsor.findById(id).lean();
+    let sponsor = await Sponsor.findById(id);
     if (!sponsor) {
       return res.status(404).json({ ok: false, message: "Sponsor non trouvé" });
     }
-    if ((sponsor as any).id_owner.toString() !== userId) {
+    if (sponsor.id_owner.toString() !== userId) {
       return res.status(403).json({ ok: false, message: "Accès refusé" });
+    }
+
+    if (
+      sponsor.price > 0 &&
+      sponsor.payment_status === "pending" &&
+      sponsor.chargily_checkout_id
+    ) {
+      await syncSponsorPaymentFromChargily(id);
+      sponsor = await Sponsor.findById(id);
+    }
+
+    if (!sponsor) {
+      return res.status(404).json({ ok: false, message: "Sponsor non trouvé" });
     }
 
     return res.status(200).json({
       ok: true,
-      payment_status: (sponsor as any).payment_status ?? "pending",
-      status: (sponsor as any).status === true,
-      paid_at: (sponsor as any).paid_at ?? null,
+      payment_status: sponsor.payment_status ?? "pending",
+      status: sponsor.status === true,
+      paid_at: sponsor.paid_at ?? null,
     });
   } catch (err: any) {
     console.error("Sponsor payment status error:", err);

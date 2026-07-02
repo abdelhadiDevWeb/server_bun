@@ -13,9 +13,143 @@ import {
   BackpressureManager 
 } from "../utils/messageIdempotency";
 import { logUserAction } from "../utils/logger";
+import { CachingService } from "../services/cachingService";
 import mongoose from "mongoose";
 
 const router = Router();
+
+function toObjectId(id: string | mongoose.Types.ObjectId): mongoose.Types.ObjectId | string {
+  return mongoose.Types.ObjectId.isValid(String(id))
+    ? new mongoose.Types.ObjectId(String(id))
+    : id;
+}
+
+function getPopulatedUserId(user: any): string {
+  if (!user) return "";
+  if (typeof user === "string") return user;
+  return user._id?.toString() || user.id?.toString() || String(user);
+}
+
+function serializePopulatedUser(user: any) {
+  const id = getPopulatedUserId(user);
+  if (typeof user === "object" && user !== null && (user.firstName !== undefined || user.name !== undefined)) {
+    return {
+      id,
+      firstName: user.firstName || user.name?.split(" ")?.[0] || "",
+      lastName: user.lastName || user.name?.split(" ")?.slice(1).join(" ") || "",
+      email: user.email || "",
+      profileImage: user.profileImage || null,
+    };
+  }
+  return { id, firstName: "", lastName: "", email: "", profileImage: null };
+}
+
+function serializeMessage(msg: any) {
+  return {
+    id: msg._id?.toString() || msg.id,
+    id_Chat: msg.id_Chat?.toString?.() || String(msg.id_Chat),
+    message: msg.message,
+    id_sender: serializePopulatedUser(msg.id_sender),
+    id_reciver: serializePopulatedUser(msg.id_reciver),
+    read: msg.read,
+    createdAt: msg.createdAt,
+    updatedAt: msg.updatedAt,
+  };
+}
+
+async function findChatsBetweenUsers(userId: string, otherUserId: string) {
+  const u1 = toObjectId(userId);
+  const u2 = toObjectId(otherUserId);
+  return ChatModel.find({
+    $or: [
+      { id_user1: u1, id_user2: u2 },
+      { id_user1: u2, id_user2: u1 },
+    ],
+  }).sort({ updatedAt: -1 });
+}
+
+async function mergeDuplicateChats(chats: any[]) {
+  if (chats.length <= 1) return chats[0] || null;
+
+  const primary = chats[0];
+  const duplicateIds = chats.slice(1).map((c) => c._id);
+
+  await MessageModel.updateMany(
+    { id_Chat: { $in: duplicateIds } },
+    { $set: { id_Chat: primary._id } }
+  );
+  await ChatModel.deleteMany({ _id: { $in: duplicateIds } });
+
+  const latestMessage = await MessageModel.findOne({ id_Chat: primary._id })
+    .sort({ createdAt: -1 })
+    .select("createdAt")
+    .lean();
+  if (latestMessage?.createdAt) {
+    await ChatModel.findByIdAndUpdate(primary._id, { updatedAt: latestMessage.createdAt });
+  }
+
+  return primary;
+}
+
+async function resolveChatBetweenUsers(userId: string, otherUserId: string) {
+  const existingChats = await findChatsBetweenUsers(userId, otherUserId);
+  if (existingChats.length > 0) {
+    return mergeDuplicateChats(existingChats);
+  }
+
+  const u1 = toObjectId(userId);
+  const u2 = toObjectId(otherUserId);
+  try {
+    return await ChatModel.create({ id_user1: u1, id_user2: u2 });
+  } catch {
+    const retryChats = await findChatsBetweenUsers(userId, otherUserId);
+    if (retryChats.length > 0) {
+      return mergeDuplicateChats(retryChats);
+    }
+    throw new Error("Impossible de créer le chat");
+  }
+}
+
+async function markChatReadForUser(chatId: string, userId: string): Promise<void> {
+  const chat = await ChatModel.findById(chatId).lean();
+  if (!chat) return;
+
+  const otherUserId =
+    chat.id_user1.toString() === userId
+      ? chat.id_user2.toString()
+      : chat.id_user1.toString();
+
+  await MessageModel.updateMany(
+    { id_Chat: chatId, id_reciver: userId, read: false },
+    { read: true }
+  );
+
+  const userIdObjectId = mongoose.Types.ObjectId.isValid(userId)
+    ? new mongoose.Types.ObjectId(userId)
+    : userId;
+  const otherUserIdObjectId = mongoose.Types.ObjectId.isValid(otherUserId)
+    ? new mongoose.Types.ObjectId(otherUserId)
+    : otherUserId;
+
+  await Notification.updateMany(
+    {
+      id_receiver: userIdObjectId,
+      id_sender: otherUserIdObjectId,
+      type: "message",
+      is_read: false,
+    },
+    { is_read: true }
+  );
+
+  try {
+    await Promise.all([
+      CachingService.invalidateCache("notifications"),
+      CachingService.invalidateCache("messages"),
+    ]);
+  } catch {
+    // non-fatal
+  }
+}
 
 // Chat system health check endpoint
 router.get("/health", authenticateToken, async (req: Request, res: Response) => {
@@ -55,61 +189,37 @@ router.post("/get-or-create", authenticateToken, async (req: Request, res: Respo
       return res.status(400).json({ ok: false, message: "ID de l'autre utilisateur requis" });
     }
 
-    if (userId === otherUserId) {
+    if (String(userId) === String(otherUserId)) {
       return res.status(400).json({ ok: false, message: "Vous ne pouvez pas créer un chat avec vous-même" });
     }
 
-    // Check if other user exists
     const otherUser = await User.findById(otherUserId);
     if (!otherUser) {
       return res.status(404).json({ ok: false, message: "Utilisateur introuvable" });
     }
 
-    // Try to find existing chat (check both directions)
-    let chat = await ChatModel.findOne({
-      $or: [
-        { id_user1: userId, id_user2: otherUserId },
-        { id_user1: otherUserId, id_user2: userId }
-      ]
-    }).populate('id_user1', 'firstName lastName email profileImage')
-      .populate('id_user2', 'firstName lastName email profileImage');
+    const chat = await resolveChatBetweenUsers(userId, otherUserId);
+    await chat.populate("id_user1", "firstName lastName email profileImage");
+    await chat.populate("id_user2", "firstName lastName email profileImage");
 
-    // If chat doesn't exist, create it
-    if (!chat) {
-      chat = await ChatModel.create({
-        id_user1: userId,
-        id_user2: otherUserId
-      });
-      
-      await chat.populate('id_user1', 'firstName lastName email profileImage');
-      await chat.populate('id_user2', 'firstName lastName email profileImage');
-    }
-
-    // Get messages for this chat
+    const chatId = chat._id?.toString() || chat.id;
     const messages = await MessageModel.find({ id_Chat: chat._id })
-      .populate('id_sender', 'firstName lastName email profileImage')
-      .populate('id_reciver', 'firstName lastName email profileImage')
+      .populate("id_sender", "firstName lastName email profileImage")
+      .populate("id_reciver", "firstName lastName email profileImage")
       .sort({ createdAt: 1 });
+
+    await markChatReadForUser(chatId, userId);
 
     return res.json({
       ok: true,
       chat: {
-        id: chat.id,
-        id_user1: chat.id_user1,
-        id_user2: chat.id_user2,
+        id: chatId,
+        id_user1: serializePopulatedUser(chat.id_user1),
+        id_user2: serializePopulatedUser(chat.id_user2),
         createdAt: chat.createdAt,
-        updatedAt: chat.updatedAt
+        updatedAt: chat.updatedAt,
       },
-      messages: messages.map(msg => ({
-        id: msg.id,
-        id_Chat: msg.id_Chat.toString(),
-        message: msg.message,
-        id_sender: msg.id_sender,
-        id_reciver: msg.id_reciver,
-        read: msg.read,
-        createdAt: msg.createdAt,
-        updatedAt: msg.updatedAt
-      }))
+      messages: messages.map(serializeMessage),
     });
   } catch (error: any) {
     console.error("Error getting or creating chat:", error);
@@ -127,13 +237,9 @@ router.get("/my-chats", authenticateToken, async (req: Request, res: Response) =
 
     console.log("Fetching chats for user:", userId);
 
-    // Find all chats where user is either user1 or user2
-    // Convert userId to ObjectId if needed for proper comparison
+    const userObjectId = toObjectId(userId);
     const chats = await ChatModel.find({
-      $or: [
-        { id_user1: userId },
-        { id_user2: userId }
-      ]
+      $or: [{ id_user1: userObjectId }, { id_user2: userObjectId }],
     })
       .populate('id_user1', 'firstName lastName email profileImage')
       .populate('id_user2', 'firstName lastName email profileImage')
@@ -141,9 +247,34 @@ router.get("/my-chats", authenticateToken, async (req: Request, res: Response) =
 
     console.log(`Found ${chats.length} chats for user ${userId}`);
 
+    const pairMap = new Map<string, any[]>();
+    for (const chat of chats) {
+      const id1 = chat.id_user1._id?.toString() || chat.id_user1.toString();
+      const id2 = chat.id_user2._id?.toString() || chat.id_user2.toString();
+      const pairKey = [id1, id2].sort().join(":");
+      if (!pairMap.has(pairKey)) pairMap.set(pairKey, []);
+      pairMap.get(pairKey)!.push(chat);
+    }
+    let mergedDuplicates = false;
+    for (const pairChats of pairMap.values()) {
+      if (pairChats.length > 1) {
+        await mergeDuplicateChats(pairChats);
+        mergedDuplicates = true;
+      }
+    }
+
+    const refreshedChats = mergedDuplicates
+      ? await ChatModel.find({
+          $or: [{ id_user1: userObjectId }, { id_user2: userObjectId }],
+        })
+          .populate("id_user1", "firstName lastName email profileImage")
+          .populate("id_user2", "firstName lastName email profileImage")
+          .sort({ updatedAt: -1 })
+      : chats;
+
     // Get last message and unread count for each chat
     const chatsWithLastMessage = await Promise.all(
-      chats.map(async (chat) => {
+      refreshedChats.map(async (chat) => {
         // Convert both to string for comparison
         const user1Id = chat.id_user1._id ? chat.id_user1._id.toString() : chat.id_user1.toString();
         const user2Id = chat.id_user2._id ? chat.id_user2._id.toString() : chat.id_user2.toString();
@@ -204,14 +335,39 @@ router.get("/my-chats", authenticateToken, async (req: Request, res: Response) =
       })
     );
 
-    // Filter out null values (chats that couldn't be processed)
-    const validChats = chatsWithLastMessage.filter(chat => chat !== null);
+    const validChats = chatsWithLastMessage.filter((chat) => chat !== null);
 
-    console.log(`Returning ${validChats.length} valid chats`);
+    const chatsByOtherUser = new Map<string, (typeof validChats)[number]>();
+    for (const chat of validChats) {
+      if (!chat) continue;
+      const key = chat.otherUser.id;
+      const existing = chatsByOtherUser.get(key);
+      if (!existing) {
+        chatsByOtherUser.set(key, chat);
+        continue;
+      }
+      const existingTime = new Date(existing.updatedAt).getTime();
+      const chatTime = new Date(chat.updatedAt).getTime();
+      if (chatTime > existingTime) {
+        chatsByOtherUser.set(key, chat);
+      } else {
+        chatsByOtherUser.set(key, {
+          ...existing,
+          unreadCount: existing.unreadCount + chat.unreadCount,
+          lastMessage: existing.lastMessage || chat.lastMessage,
+        });
+      }
+    }
+
+    const dedupedChats = Array.from(chatsByOtherUser.values()).sort(
+      (a, b) => new Date(b!.updatedAt).getTime() - new Date(a!.updatedAt).getTime()
+    );
+
+    console.log(`Returning ${dedupedChats.length} valid chats`);
 
     return res.json({
       ok: true,
-      chats: validChats
+      chats: dedupedChats,
     });
   } catch (error: any) {
     console.error("Error getting user chats:", error);
@@ -370,40 +526,26 @@ router.post("/send-message",
     const io = (global as any).io;
     if (io) {
       try {
-        // Prepare message data
         const messageData = {
-          id: newMessage.id,
+          ...serializeMessage(newMessage),
           messageId: finalMessageId,
-          id_Chat: newMessage.id_Chat.toString(),
-          message: newMessage.message,
+        };
+
+        const notificationId = notification._id?.toString() || notification.id;
+        const notificationData = {
+          id: notificationId,
           id_sender: {
-            id: (newMessage.id_sender as any).id,
+            id: userId,
             firstName: (newMessage.id_sender as any).firstName,
             lastName: (newMessage.id_sender as any).lastName,
             email: (newMessage.id_sender as any).email,
-            profileImage: (newMessage.id_sender as any).profileImage
+            profileImage: (newMessage.id_sender as any).profileImage,
           },
-          id_reciver: {
-            id: (newMessage.id_reciver as any).id,
-            firstName: (newMessage.id_reciver as any).firstName,
-            lastName: (newMessage.id_reciver as any).lastName,
-            email: (newMessage.id_reciver as any).email,
-            profileImage: (newMessage.id_reciver as any).profileImage
-          },
-          read: newMessage.read,
-          createdAt: newMessage.createdAt,
-          updatedAt: newMessage.updatedAt
-        };
-
-        // Prepare notification data
-        const notificationData = {
-          id: notification.id,
-          id_sender: userId,
           id_receiver: id_reciver,
           message: notification.message,
           type: notification.type,
           is_read: notification.is_read,
-          createdAt: notification.createdAt
+          createdAt: notification.createdAt,
         };
 
         // Use event coalescing for better performance under load
@@ -420,7 +562,7 @@ router.post("/send-message",
           'new_notification',
           notificationData,
           `user_${id_reciver}`,
-          `notification:${id_reciver}`
+          `notification:${id_reciver}:${notificationId}`
         );
 
         // Record successful event processing
@@ -438,28 +580,9 @@ router.post("/send-message",
       messageId: finalMessageId,
       remainingMessages: rateLimitCheck.remainingMessages,
       message: {
-        id: newMessage.id,
+        ...serializeMessage(newMessage),
         messageId: finalMessageId,
-        id_Chat: newMessage.id_Chat.toString(),
-        message: newMessage.message,
-        id_sender: {
-          id: (newMessage.id_sender as any).id,
-          firstName: (newMessage.id_sender as any).firstName,
-          lastName: (newMessage.id_sender as any).lastName,
-          email: (newMessage.id_sender as any).email,
-          profileImage: (newMessage.id_sender as any).profileImage
-        },
-        id_reciver: {
-          id: (newMessage.id_reciver as any).id,
-          firstName: (newMessage.id_reciver as any).firstName,
-          lastName: (newMessage.id_reciver as any).lastName,
-          email: (newMessage.id_reciver as any).email,
-          profileImage: (newMessage.id_reciver as any).profileImage
-        },
-        read: newMessage.read,
-        createdAt: newMessage.createdAt,
-        updatedAt: newMessage.updatedAt
-      }
+      },
     });
   } catch (error: any) {
     console.error("Error sending message:", error);
@@ -494,36 +617,11 @@ router.get("/:chatId/messages", authenticateToken, async (req: Request, res: Res
       .populate('id_reciver', 'firstName lastName email profileImage')
       .sort({ createdAt: 1 });
 
-    // Mark messages as read
-    await MessageModel.updateMany(
-      { id_Chat: chatId, id_reciver: userId, read: false },
-      { read: true }
-    );
+    await markChatReadForUser(chatId, userId);
 
     return res.json({
       ok: true,
-      messages: messages.map(msg => ({
-        id: msg.id,
-        id_Chat: msg.id_Chat.toString(),
-        message: msg.message,
-        id_sender: {
-          id: (msg.id_sender as any).id,
-          firstName: (msg.id_sender as any).firstName,
-          lastName: (msg.id_sender as any).lastName,
-          email: (msg.id_sender as any).email,
-          profileImage: (msg.id_sender as any).profileImage
-        },
-        id_reciver: {
-          id: (msg.id_reciver as any).id,
-          firstName: (msg.id_reciver as any).firstName,
-          lastName: (msg.id_reciver as any).lastName,
-          email: (msg.id_reciver as any).email,
-          profileImage: (msg.id_reciver as any).profileImage
-        },
-        read: msg.read,
-        createdAt: msg.createdAt,
-        updatedAt: msg.updatedAt
-      }))
+      messages: messages.map(serializeMessage),
     });
   } catch (error: any) {
     console.error("Error getting messages:", error);
@@ -552,11 +650,7 @@ router.put("/:chatId/mark-read", authenticateToken, async (req: Request, res: Re
       return res.status(403).json({ ok: false, message: "Vous n'avez pas accès à ce chat" });
     }
 
-    // Mark messages as read
-    await MessageModel.updateMany(
-      { id_Chat: chatId, id_reciver: userId, read: false },
-      { read: true }
-    );
+    await markChatReadForUser(chatId, userId);
 
     return res.json({ ok: true, message: "Messages marqués comme lus" });
   } catch (error: any) {

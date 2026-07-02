@@ -87,8 +87,7 @@ async function chargilyFetch(
   }
 }
 
-/** Reuse an open checkout instead of creating a duplicate on every Pay tap. */
-export async function getChargilyCheckout(
+async function fetchChargilyCheckoutRecord(
   checkoutId: string
 ): Promise<ChargilyCheckout | null> {
   const id = checkoutId?.trim();
@@ -109,9 +108,19 @@ export async function getChargilyCheckout(
     | (ChargilyCheckout & { message?: string })
     | null;
 
-  if (!res.ok || !data?.checkout_url) {
+  if (!res.ok || !data?.id) {
     return null;
   }
+
+  return data;
+}
+
+/** Reuse an open checkout instead of creating a duplicate on every Pay tap. */
+export async function getChargilyCheckout(
+  checkoutId: string
+): Promise<ChargilyCheckout | null> {
+  const data = await fetchChargilyCheckoutRecord(checkoutId);
+  if (!data?.checkout_url) return null;
 
   const terminal = ["paid", "expired", "canceled", "cancelled"].includes(
     String(data.status || "").toLowerCase()
@@ -119,6 +128,13 @@ export async function getChargilyCheckout(
   if (terminal) return null;
 
   return data;
+}
+
+/** Poll Chargily for final checkout status (including paid). */
+export async function getChargilyCheckoutPaymentStatus(
+  checkoutId: string
+): Promise<ChargilyCheckout | null> {
+  return fetchChargilyCheckoutRecord(checkoutId);
 }
 
 export async function createChargilyCheckout(
@@ -152,19 +168,23 @@ export async function createChargilyCheckout(
   return data;
 }
 
+function cleanPublicUrl(raw: string | undefined, fallback: string): string {
+  if (!raw?.trim()) return fallback;
+  return raw.trim().replace(/^['"]|['"]$/g, "").replace(/\/$/, "");
+}
+
 export function getFrontendBaseUrl(): string {
-  const raw =
+  return cleanPublicUrl(
     process.env.FRONTEND_URL ||
-    process.env.URLFRONT ||
-    process.env.CLIENT_URL ||
-    "http://localhost:3000";
-  return raw.replace(/\/$/, "");
+      process.env.URLFRONT ||
+      process.env.CLIENT_URL,
+    "http://localhost:3000"
+  );
 }
 
 export function getBackendPublicUrl(): string {
-  const raw =
-    process.env.BACKEND_PUBLIC_URL ||
-    process.env.PUBLIC_BACKEND_URL ||
-    `http://localhost:${process.env.PORT || 7000}`;
-  return raw.replace(/\/$/, "");
+  return cleanPublicUrl(
+    process.env.BACKEND_PUBLIC_URL || process.env.PUBLIC_BACKEND_URL,
+    `http://localhost:${process.env.PORT || 7000}`
+  );
 }

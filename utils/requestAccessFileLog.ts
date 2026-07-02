@@ -1,5 +1,6 @@
 import { appendFile, mkdir } from "fs/promises";
 import path from "path";
+import { fileURLToPath } from "node:url";
 import type { NextFunction, Request, Response } from "express";
 import { logger } from "./logger";
 
@@ -9,7 +10,7 @@ const ENABLED =
 
 const LOG_FILE = process.env.REQUEST_ACCESS_LOG_FILE?.trim()
   ? path.resolve(process.env.REQUEST_ACCESS_LOG_FILE.trim())
-  : path.join(path.dirname(import.meta.dir), "logs", "access.log");
+  : path.join(path.dirname(fileURLToPath(import.meta.url)), "logs", "access.log");
 
 const UA_MAX = 400;
 

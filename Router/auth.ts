@@ -23,6 +23,125 @@ import {
 } from "../middleware/enhancedSecurity.middleware";
 import { authenticateToken } from "../middleware/auth.middleware";
 import { logUserAction, logSecurityEvent } from "../utils/logger";
+
+const STARTER_PLAN_NAME = "Starter Plan";
+
+type StarterPlanInfo = {
+  name: string;
+  price: number;
+  time: number;
+  isFree: boolean;
+};
+
+async function tryAssignStarterPlan(
+  normalizedEmailLower: string,
+  accountType: "user" | "workshop"
+): Promise<{
+  starterPlanAssigned: boolean;
+  starterPlan: StarterPlanInfo | null;
+  starterPlanBlocked: boolean;
+  accountActivated: boolean;
+}> {
+  const starterPlanActive = await TypeAbonnement.findOne({
+    name: STARTER_PLAN_NAME,
+    status: "actif",
+  });
+  const starterPlanBlocked = await TypeAbonnement.findOne({
+    name: STARTER_PLAN_NAME,
+    status: "block",
+  });
+
+  const clientType = accountType === "user" ? "User" : "Workshop";
+  const clientDoc =
+    accountType === "user"
+      ? await User.findOne({ email: normalizedEmailLower })
+      : await Workshop.findOne({ email: normalizedEmailLower });
+
+  if (!clientDoc) {
+    return {
+      starterPlanAssigned: false,
+      starterPlan: null,
+      starterPlanBlocked: !!starterPlanBlocked,
+      accountActivated: false,
+    };
+  }
+
+  if (!starterPlanActive) {
+    return {
+      starterPlanAssigned: false,
+      starterPlan: null,
+      starterPlanBlocked: !!starterPlanBlocked,
+      accountActivated: false,
+    };
+  }
+
+  const now = new Date();
+  const existingActive = await ClientAbonnement.findOne({
+    client: clientDoc._id,
+    clientType,
+    date_end: { $gte: now },
+  }).lean();
+
+  if (existingActive) {
+    if (clientType === "User") {
+      await User.updateOne({ _id: clientDoc._id }, { status: true });
+    } else {
+      await Workshop.updateOne({ _id: clientDoc._id }, { status: true });
+    }
+    const linkedPlan = await TypeAbonnement.findById(
+      existingActive.type_abonnement
+    ).lean();
+    return {
+      starterPlanAssigned: true,
+      starterPlan: linkedPlan
+        ? {
+            name: linkedPlan.name,
+            price: linkedPlan.price,
+            time: linkedPlan.time,
+            isFree: linkedPlan.price === 0,
+          }
+        : {
+            name: STARTER_PLAN_NAME,
+            price: starterPlanActive.price,
+            time: starterPlanActive.time,
+            isFree: starterPlanActive.price === 0,
+          },
+      starterPlanBlocked: false,
+      accountActivated: true,
+    };
+  }
+
+  const dateStart = new Date();
+  const dateEnd = new Date();
+  dateEnd.setDate(dateEnd.getDate() + starterPlanActive.time);
+
+  await ClientAbonnement.create({
+    type_abonnement: starterPlanActive._id,
+    client: clientDoc._id,
+    clientType,
+    date_start: dateStart,
+    date_end: dateEnd,
+    price: starterPlanActive.price,
+  });
+
+  if (clientType === "User") {
+    await User.updateOne({ _id: clientDoc._id }, { status: true });
+  } else {
+    await Workshop.updateOne({ _id: clientDoc._id }, { status: true });
+  }
+
+  return {
+    starterPlanAssigned: true,
+    starterPlan: {
+      name: starterPlanActive.name,
+      price: starterPlanActive.price,
+      time: starterPlanActive.time,
+      isFree: starterPlanActive.price === 0,
+    },
+    starterPlanBlocked: false,
+    accountActivated: true,
+  };
+}
 import { sendPushNotification } from "../services/pushNotificationService";
 
 const router = Router();
@@ -477,9 +596,9 @@ router.post("/verify-email", emailVerificationRateLimiter, validate(validationSc
 
     // Update user/workshop verfie status
     const normalizedEmailLower = email.toLowerCase();
-    if (type === "user") {
+    if (normalizedType === "user") {
       await User.updateOne({ email: normalizedEmailLower }, { verfie: true });
-    } else if (type === "workshop") {
+    } else if (normalizedType === "workshop") {
       await Workshop.updateOne({ email: normalizedEmailLower }, { verfie: true });
     }
 
@@ -487,54 +606,36 @@ router.post("/verify-email", emailVerificationRateLimiter, validate(validationSc
     await EmailVerification.deleteOne({ _id: verification._id });
     console.log(`✅ Email verified successfully for ${normalizedEmailLower}`);
 
-    // Auto-assign Starter Plan abonnement if it exists and is active
-    let starterPlanAssigned = false;
+    let starterResult = {
+      starterPlanAssigned: false,
+      starterPlan: null as StarterPlanInfo | null,
+      starterPlanBlocked: false,
+      accountActivated: false,
+    };
     try {
-      const starterPlan = await TypeAbonnement.findOne({ name: 'Starter Plan', status: 'actif' });
-      if (starterPlan) {
-        const clientType = normalizedType === 'user' ? 'User' : 'Workshop';
-        let clientDoc: any = null;
-
-        if (clientType === 'User') {
-          clientDoc = await User.findOne({ email: normalizedEmailLower });
-        } else {
-          clientDoc = await Workshop.findOne({ email: normalizedEmailLower });
-        }
-
-        if (clientDoc) {
-          const dateStart = new Date();
-          const dateEnd = new Date();
-          dateEnd.setDate(dateEnd.getDate() + starterPlan.time);
-
-          await ClientAbonnement.create({
-            type_abonnement: starterPlan._id,
-            client: clientDoc._id,
-            clientType,
-            date_start: dateStart,
-            date_end: dateEnd,
-            price: starterPlan.price,
-          });
-
-          if (clientType === 'User') {
-            await User.updateOne({ _id: clientDoc._id }, { status: true });
-          } else {
-            await Workshop.updateOne({ _id: clientDoc._id }, { status: true });
-          }
-
-          starterPlanAssigned = true;
-          console.log(`✅ Starter Plan auto-assigned to ${clientType} ${normalizedEmailLower}`);
-        }
+      starterResult = await tryAssignStarterPlan(
+        normalizedEmailLower,
+        normalizedType === "user" ? "user" : "workshop"
+      );
+      if (starterResult.starterPlanAssigned) {
+        console.log(`✅ Starter Plan auto-assigned to ${normalizedEmailLower}`);
+      } else if (starterResult.starterPlanBlocked) {
+        console.log(`ℹ️ Starter Plan is blocked — account stays inactive for ${normalizedEmailLower}`);
       } else {
-        console.log(`ℹ️ No active Starter Plan found, skipping auto-assignment`);
+        console.log(`ℹ️ No active Starter Plan — account stays inactive for ${normalizedEmailLower}`);
       }
     } catch (starterErr: any) {
-      console.error('Error auto-assigning Starter Plan:', starterErr);
+      console.error("Error auto-assigning Starter Plan:", starterErr);
     }
 
     return res.status(200).json({
       ok: true,
       message: "Email vérifié avec succès!",
-      starterPlanAssigned,
+      starterPlanAssigned: starterResult.starterPlanAssigned,
+      starterPlan: starterResult.starterPlan,
+      starterPlanBlocked: starterResult.starterPlanBlocked,
+      accountActivated: starterResult.accountActivated,
+      needsActivation: !starterResult.accountActivated,
     });
   } catch (err: any) {
     console.error("❌ Error verifying email:", err);
@@ -1010,7 +1111,14 @@ router.post("/login",
 // Get user by ID (public endpoint)
 router.get("/user/:id", async (req: Request, res: Response) => {
   try {
-    const userId = req.params.id;
+    const userId = String(req.params.id || '').trim();
+
+    if (!userId || userId === '[object Object]') {
+      return res.status(400).json({
+        ok: false,
+        message: "ID utilisateur invalide",
+      });
+    }
 
     const user = await User.findById(userId).select('-password').lean();
 
@@ -1024,7 +1132,8 @@ router.get("/user/:id", async (req: Request, res: Response) => {
     return res.status(200).json({
       ok: true,
       user: {
-        _id: user._id,
+        _id: user._id?.toString(),
+        id: user._id?.toString(),
         firstName: user.firstName,
         lastName: user.lastName,
         email: user.email,

@@ -86,6 +86,34 @@ const CarSchema = new Schema(
       type: Date,
       default: null
     }, // Date when warning expires (24h after warning sent)
+    locationLat: {
+      type: Number,
+      default: null,
+    },
+    locationLng: {
+      type: Number,
+      default: null,
+    },
+    locationCommune: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    locationWilaya: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    locationDaira: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    locationFormattedAddress: {
+      type: String,
+      trim: true,
+      default: null,
+    },
   },
   { timestamps: true }
 );

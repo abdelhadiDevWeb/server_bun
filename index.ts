@@ -1,7 +1,7 @@
-// Initialize Sentry first before any other imports
+// Initialize Sentry early (no top-level await — required for cPanel/LiteSpeed require() of dist/index.js)
 import "dotenv/config";
 import { initializeSentryAsync, Sentry } from "./config/sentry";
-await initializeSentryAsync();
+const sentryReady = initializeSentryAsync();
 
 import helmet from "helmet";
 import morgan from "morgan";
@@ -16,6 +16,7 @@ import {
 import { connectDatabase } from "./Database/Mongoose";
 import { AppConfig, ValidatAppConfig } from "./config/app.config";
 import Allversion from "./Router/index";
+import mediaRouter from "./Router/media";
 import { handleChargilySponsorWebhook } from "./Router/sponsor";
 import crypto from 'crypto'
 import  {type Request , type Response , type NextFunction}  from 'express'
@@ -51,11 +52,34 @@ const server = http.createServer(app);
 // so req.ip and X-Forwarded-For are handled correctly (needed by express-rate-limit).
 app.set("trust proxy", 1);
 
+function buildAllowedOrigins(): string[] {
+  const defaults = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    "https://carsure-dz.vercel.app",
+    "https://carsure.dz",
+    "https://www.carsure.dz",
+  ];
+  const fromEnv = (process.env.CORS_ORIGINS || "")
+    .split(",")
+    .map((o) => o.trim().replace(/\/$/, ""))
+    .filter(Boolean);
+  const front = (process.env.FRONTEND_URL || process.env.URLFRONT || "")
+    .trim()
+    .replace(/^['"]|['"]$/g, "")
+    .replace(/\/$/, "");
+  const extra = front ? [front] : [];
+  return [...new Set([...defaults, ...fromEnv, ...extra])];
+}
+
+const allowedOrigins = buildAllowedOrigins();
+
 // Initialize Socket.IO
 const io = new SocketIOServer(server, {
   cors: {
-    origin:"https://carsure-dz.vercel.app",
-    // origin: process.env.NODE_ENV !== 'production' ? true : ["http://localhost:3000", "http://localhost:5173"],
+    origin: allowedOrigins,
     credentials: true,
     methods: ["GET", "POST"]
   },
@@ -119,16 +143,7 @@ io.on('connection', (socket) => {
 });
 
 
-// CORS configuration - Allow all origins in development for mobile apps
-// In production, restrict to specific domains
-const allowedOrigins = [
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "http://127.0.0.1:3000",
-  "http://127.0.0.1:5173",
-  "https://carsure-dz.vercel.app",
-];
-
+// CORS — also set CORS_ORIGINS=https://your-domain.com on cPanel if needed
 const corsOptions: CorsOptions = {
   origin(origin, callback) {
     // السماح لـ Postman / mobile apps / curl
@@ -155,6 +170,7 @@ app.options("*", cors(corsOptions));
 // especially on platforms like Render where cwd can differ from source dir.
 const uploadsRoot = path.resolve(process.cwd(), 'uploads');
 app.use('/uploads/images', express.static(path.join(uploadsRoot, 'images')));
+app.use('/uploads/_cache', express.static(path.join(uploadsRoot, '_cache')));
 app.use('/uploads/pdf', express.static(path.join(uploadsRoot, 'pdf')));
 app.use('/uploads/video', express.static(path.join(uploadsRoot, 'video')));
 app.use('/uploads/users_images', express.static(path.join(uploadsRoot, 'users_images')));
@@ -253,7 +269,10 @@ app.use(
   })
 );
 
-// General rate limiting
+// Image resize (before rate limiter — car details loads many photos at once)
+app.use("/api/media", mediaRouter);
+
+// General rate limiting (API JSON routes only; images/uploads excluded in skip)
 import { generalRateLimiter } from "./middleware/rateLimit.middleware";
 app.use(generalRateLimiter);
 
@@ -263,9 +282,6 @@ app.use('/api' , Allversion)
 
 // Error logging middleware (before Sentry handler)
 app.use(errorLoggingMiddleware);
-
-// Sentry error handler must be after all routes but before other error handlers
-Sentry?.setupExpressErrorHandler?.(app);
 
 // Health check endpoint
 app.get('/api/health', async (_req: Request, res: Response) => {
@@ -396,7 +412,12 @@ app.get('/api/admin/metrics-summary', async (req: Request, res: Response) => {
   }
 });
 
-ValidatAppConfig(async () => {
+async function startServer() {
+  await sentryReady;
+  // Sentry error handler must be after all routes but before other error handlers
+  Sentry?.setupExpressErrorHandler?.(app);
+
+  ValidatAppConfig(async () => {
   try {
     // Connect to MongoDB
     await connectDatabase();
@@ -451,6 +472,15 @@ ValidatAppConfig(async () => {
     }
     throw new Error('Unknown error occurred');
   }
+  });
+}
+
+startServer().catch((err: unknown) => {
+  logger.fatal({
+    error: err,
+    msg: 'Failed to start server',
+  });
+  process.exit(1);
 });
 
 // Graceful shutdown handling

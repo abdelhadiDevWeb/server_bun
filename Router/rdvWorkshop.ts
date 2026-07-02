@@ -15,12 +15,54 @@ import QRCode from "qrcode";
 
 const router = Router();
 
+const APP_TIMEZONE = "Africa/Algiers";
+
 // Utility function to normalize time to 30-minute intervals (round down to nearest 30 minutes)
 const normalizeTime = (timeStr: string): string => {
   const [hours, minutes] = timeStr.split(':').map(Number);
   // Round down to nearest 30 minutes
   const normalizedMinutes = minutes < 30 ? 0 : 30;
   return `${hours.toString().padStart(2, '0')}:${normalizedMinutes.toString().padStart(2, '0')}`;
+};
+
+const timeToMinutes = (timeStr: string): number => {
+  const [hours, minutes] = timeStr.split(":").map(Number);
+  return hours * 60 + minutes;
+};
+
+const getTodayDateString = (timeZone = APP_TIMEZONE): string =>
+  new Date().toLocaleDateString("en-CA", { timeZone });
+
+const getCurrentMinutesInTimezone = (timeZone = APP_TIMEZONE): number => {
+  const formatter = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(new Date());
+  const hour = Number(parts.find((p) => p.type === "hour")?.value ?? 0);
+  const minute = Number(parts.find((p) => p.type === "minute")?.value ?? 0);
+  return hour * 60 + minute;
+};
+
+const toDateString = (dateInput: string | Date): string => {
+  if (typeof dateInput === "string") {
+    return dateInput.split("T")[0];
+  }
+  return dateInput.toLocaleDateString("en-CA", { timeZone: APP_TIMEZONE });
+};
+
+/** Hide slots at or before the current time when booking for today. */
+const filterPastTimeSlots = (dateInput: string | Date, times: string[]): string[] => {
+  if (toDateString(dateInput) !== getTodayDateString()) return times;
+  const nowMinutes = getCurrentMinutesInTimezone();
+  return times.filter((time) => timeToMinutes(time) > nowMinutes);
+};
+
+const isPastTimeSlot = (dateInput: string | Date, timeStr: string): boolean => {
+  if (toDateString(dateInput) !== getTodayDateString()) return false;
+  return timeToMinutes(timeStr) <= getCurrentMinutesInTimezone();
 };
 
 // Validation schema for appointment creation
@@ -66,13 +108,17 @@ router.get(
       endOfDay.setHours(23, 59, 59, 999);
 
       // Get all appointments for this date
+      const excludeId = req.query.exclude_appointment_id as string | undefined;
       const existingAppointments = await RendezVousWorkshop.find({
         id_workshop,
         date: {
           $gte: startOfDay,
           $lte: endOfDay,
         },
-        status: { $in: ['en_attente', 'accepted'] }, // Only check pending and accepted
+        status: { $in: ['en_attente', 'accepted'] },
+        ...(excludeId && mongoose.Types.ObjectId.isValid(excludeId)
+          ? { _id: { $ne: new mongoose.Types.ObjectId(excludeId) } }
+          : {}),
       }).lean();
 
       // Normalize times to 30-minute intervals
@@ -91,7 +137,10 @@ router.get(
       }
       // Note: This generates slots from 8:00 to 23:30 (32 slots total)
 
-      const availableTimes = allTimeSlots.filter(time => !unavailableTimes.includes(time));
+      const availableTimes = filterPastTimeSlots(
+        date as string,
+        allTimeSlots.filter((time) => !unavailableTimes.includes(time)),
+      );
 
       return res.status(200).json({
         ok: true,
@@ -176,6 +225,13 @@ router.post(
 
       // Normalize the requested time
       const normalizedTime = normalizeTime(time);
+
+      if (isPastTimeSlot(date, normalizedTime)) {
+        return res.status(400).json({
+          ok: false,
+          message: "Ce créneau horaire est déjà passé",
+        });
+      }
 
       // Check if the requested time is already taken (compare normalized times)
       const isTimeTaken = existingAppointments.some(apt => normalizeTime(apt.time) === normalizedTime);
@@ -311,6 +367,253 @@ router.get(
       });
     }
   }
+);
+
+const rescheduleRdvSchema = Joi.object({
+  date: Joi.date().required().messages({
+    "any.required": "La date est requise",
+    "date.base": "Format de date invalide",
+  }),
+  time: Joi.string()
+    .pattern(/^([0-1]?[0-9]|2[0-3]):(00|30)$/)
+    .required()
+    .messages({
+      "any.required": "L'heure est requise",
+      "string.pattern.base":
+        "Format d'heure invalide. Les heures doivent être en intervalles de 30 minutes (ex: 8:00, 8:30, 9:00)",
+    }),
+});
+
+async function notifyWorkshopAboutRdvChange(params: {
+  senderId: string;
+  workshopId: string;
+  carId?: string;
+  message: string;
+  type: "rdv_workshop" | "cancel_rdv_workshop";
+  appointment?: Record<string, unknown>;
+}) {
+  const notification = new Notification({
+    id_sender: params.senderId,
+    id_receiver: params.workshopId,
+    id_car: params.carId,
+    message: params.message,
+    type: params.type,
+    is_read: false,
+  });
+  await notification.save();
+
+  const pushTitle =
+    params.type === "cancel_rdv_workshop" ? "Rendez-vous annulé" : "Modification de rendez-vous";
+
+  await sendPushNotification(params.workshopId, pushTitle, params.message, {
+    notificationId: notification.id,
+    type: params.type,
+    senderId: params.senderId,
+    carId: params.carId,
+  });
+
+  const io = (global as any).io;
+  if (io) {
+    io.to(`workshop_${params.workshopId}`).emit("new_notification", {
+      notification: notification.toJSON(),
+      appointment: params.appointment ?? null,
+    });
+  }
+
+  return notification;
+}
+
+// Seller reschedules an appointment → status back to en_attente + workshop notified
+router.put(
+  "/my-appointments/:id/reschedule",
+  authenticateToken,
+  async (req: Request, res: Response) => {
+    try {
+      const userId = req.user?.id;
+      const userType = req.user?.type;
+      const appointmentId = req.params.id;
+
+      if (!userId || userType !== "user") {
+        return res.status(401).json({
+          ok: false,
+          message: "Utilisateur non authentifié",
+        });
+      }
+
+      const { error, value } = rescheduleRdvSchema.validate(req.body, {
+        abortEarly: false,
+        stripUnknown: true,
+      });
+      if (error) {
+        return res.status(400).json({
+          ok: false,
+          message: "Erreur de validation",
+          errors: error.details.map((d) => d.message),
+        });
+      }
+
+      const appointment = await RendezVousWorkshop.findById(appointmentId);
+      if (!appointment) {
+        return res.status(404).json({ ok: false, message: "Rendez-vous non trouvé" });
+      }
+
+      if (appointment.id_owner_car.toString() !== userId) {
+        return res.status(403).json({
+          ok: false,
+          message: "Vous n'avez pas le droit de modifier ce rendez-vous",
+        });
+      }
+
+      if (!["en_attente", "accepted"].includes(appointment.status)) {
+        return res.status(400).json({
+          ok: false,
+          message: "Ce rendez-vous ne peut plus être modifié",
+        });
+      }
+
+      const { date, time } = value;
+      const normalizedTime = normalizeTime(time);
+
+      if (isPastTimeSlot(date, normalizedTime)) {
+        return res.status(400).json({
+          ok: false,
+          message: "Ce créneau horaire est déjà passé",
+        });
+      }
+
+      const appointmentDate = new Date(date);
+      const startOfDay = new Date(appointmentDate);
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(appointmentDate);
+      endOfDay.setHours(23, 59, 59, 999);
+
+      const conflicting = await RendezVousWorkshop.find({
+        _id: { $ne: appointment._id },
+        id_workshop: appointment.id_workshop,
+        date: { $gte: startOfDay, $lte: endOfDay },
+        status: { $in: ["en_attente", "accepted"] },
+      }).lean();
+
+      const isTimeTaken = conflicting.some(
+        (apt) => normalizeTime(apt.time) === normalizedTime,
+      );
+      if (isTimeTaken) {
+        return res.status(400).json({
+          ok: false,
+          message: "Ce créneau horaire n'est pas disponible",
+        });
+      }
+
+      const oldDateStr = new Date(appointment.date).toLocaleDateString("fr-FR");
+      const oldTime = appointment.time;
+
+      appointment.date = new Date(date);
+      appointment.time = normalizedTime;
+      appointment.status = "en_attente";
+      await appointment.save();
+
+      const seller = await User.findById(userId).select("firstName lastName").lean();
+      const sellerName = seller
+        ? `${seller.firstName || ""} ${seller.lastName || ""}`.trim()
+        : "Un client";
+      const car = await Car.findById(appointment.id_car).select("brand model year").lean();
+      const carName = car ? `${car.brand} ${car.model} ${car.year}` : "véhicule";
+      const newDateStr = new Date(date).toLocaleDateString("fr-FR");
+
+      const message = `${sellerName} a modifié la date/heure de son rendez-vous (${carName}) : anciennement le ${oldDateStr} à ${oldTime}, maintenant le ${newDateStr} à ${normalizedTime}. Veuillez vérifier si vous êtes disponible à cette date et heure.`;
+
+      await notifyWorkshopAboutRdvChange({
+        senderId: userId,
+        workshopId: appointment.id_workshop.toString(),
+        carId: appointment.id_car?.toString(),
+        message,
+        type: "rdv_workshop",
+        appointment: appointment.toJSON() as Record<string, unknown>,
+      });
+
+      return res.status(200).json({
+        ok: true,
+        message: "Rendez-vous modifié. L'atelier a été notifié et doit confirmer la disponibilité.",
+        appointment: appointment.toJSON(),
+      });
+    } catch (err: any) {
+      console.error("Reschedule appointment error:", err);
+      return res.status(500).json({
+        ok: false,
+        message: err?.message ?? "Erreur serveur",
+      });
+    }
+  },
+);
+
+// Seller cancels/deletes an appointment → workshop notified
+router.delete(
+  "/my-appointments/:id",
+  authenticateToken,
+  async (req: Request, res: Response) => {
+    try {
+      const userId = req.user?.id;
+      const userType = req.user?.type;
+      const appointmentId = req.params.id;
+
+      if (!userId || userType !== "user") {
+        return res.status(401).json({
+          ok: false,
+          message: "Utilisateur non authentifié",
+        });
+      }
+
+      const appointment = await RendezVousWorkshop.findById(appointmentId);
+      if (!appointment) {
+        return res.status(404).json({ ok: false, message: "Rendez-vous non trouvé" });
+      }
+
+      if (appointment.id_owner_car.toString() !== userId) {
+        return res.status(403).json({
+          ok: false,
+          message: "Vous n'avez pas le droit de supprimer ce rendez-vous",
+        });
+      }
+
+      if (!["en_attente", "accepted"].includes(appointment.status)) {
+        return res.status(400).json({
+          ok: false,
+          message: "Ce rendez-vous ne peut plus être annulé",
+        });
+      }
+
+      const seller = await User.findById(userId).select("firstName lastName").lean();
+      const sellerName = seller
+        ? `${seller.firstName || ""} ${seller.lastName || ""}`.trim()
+        : "Un client";
+      const car = await Car.findById(appointment.id_car).select("brand model year").lean();
+      const carName = car ? `${car.brand} ${car.model} ${car.year}` : "véhicule";
+      const dateStr = new Date(appointment.date).toLocaleDateString("fr-FR");
+
+      const message = `${sellerName} a annulé son rendez-vous pour ${carName} prévu le ${dateStr} à ${appointment.time}.`;
+
+      await notifyWorkshopAboutRdvChange({
+        senderId: userId,
+        workshopId: appointment.id_workshop.toString(),
+        carId: appointment.id_car?.toString(),
+        message,
+        type: "cancel_rdv_workshop",
+      });
+
+      await RendezVousWorkshop.deleteOne({ _id: appointment._id });
+
+      return res.status(200).json({
+        ok: true,
+        message: "Rendez-vous annulé. L'atelier a été notifié.",
+      });
+    } catch (err: any) {
+      console.error("Delete seller appointment error:", err);
+      return res.status(500).json({
+        ok: false,
+        message: err?.message ?? "Erreur serveur",
+      });
+    }
+  },
 );
 
 // Get appointments for a specific car (public endpoint)
